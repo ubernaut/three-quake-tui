@@ -49,7 +49,7 @@ import { host_frametime, set_host_frametime, realtime } from './host.js';
 import { COM_LoadFile } from './pak.js';
 import { VectorCopy, VectorAdd, VectorSubtract } from './mathlib.js';
 import { Mod_ForName } from './gl_model.js';
-import { PR_LoadProgs, PR_AllocEdicts, ED_ClearEdict, ED_LoadFromFile } from './pr_edict.js';
+import { PR_LoadProgs, PR_AllocEdicts, ED_ClearEdict, ED_LoadFromFile, PR_SetCurrentSkill } from './pr_edict.js';
 import { pr_global_struct, pr_strings, pr_edict_size, progs, EDICT_NUM, PR_SetSV, EDICT_TO_PROG, PROG_TO_EDICT, NEXT_EDICT, PR_GetString } from './progs.js';
 import { SV_ClearWorld, SV_Move, SV_TestEntityPosition, SV_LinkEdict, SV_PointContents } from './world.js';
 import { SV_Physics, SV_SetState, SV_SetCallbacks } from './sv_phys.js';
@@ -1037,6 +1037,7 @@ export function SV_SpawnServer( server ) {
 		current_skill = 3;
 
 	Cvar_SetValue( 'skill', current_skill );
+	PR_SetCurrentSkill( current_skill );
 
 	//
 	// set up the new server
