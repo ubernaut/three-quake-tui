@@ -10,7 +10,7 @@ import {
 } from './keys.js';
 import { cl_forwardspeed, cl_backspeed } from './cl_input.js';
 import { sensitivity, m_pitch, lookspring, lookstrafe } from './cl_main.js';
-import { bgmvolume, volume } from './sound.js';
+import { volume } from './sound.js';
 import { Cvar_SetValue } from './cvar.js';
 import { scr_viewsize, scr_con_current } from './gl_screen.js';
 import { v_gamma } from './view.js';
@@ -843,15 +843,7 @@ function M_AdjustSliders( dir ) {
 				Cvar_SetValue( 'sensitivity', 11 );
 			break;
 
-		case 7: // music volume
-			Cvar_SetValue( 'bgmvolume', bgmvolume.value + dir * 0.1 );
-			if ( bgmvolume.value < 0 )
-				Cvar_SetValue( 'bgmvolume', 0 );
-			if ( bgmvolume.value > 1 )
-				Cvar_SetValue( 'bgmvolume', 1 );
-			break;
-
-		case 8: // sfx volume
+		case 7: // sfx volume
 			Cvar_SetValue( 'volume', volume.value + dir * 0.1 );
 			if ( volume.value < 0 )
 				Cvar_SetValue( 'volume', 0 );
@@ -859,7 +851,7 @@ function M_AdjustSliders( dir ) {
 				Cvar_SetValue( 'volume', 1 );
 			break;
 
-		case 9: // always run
+		case 8: // always run
 			if ( cl_forwardspeed.value > 200 ) {
 
 				Cvar_SetValue( 'cl_forwardspeed', 200 );
@@ -874,15 +866,15 @@ function M_AdjustSliders( dir ) {
 
 			break;
 
-		case 10: // invert mouse
+		case 9: // invert mouse
 			Cvar_SetValue( 'm_pitch', - m_pitch.value );
 			break;
 
-		case 11: // lookspring
+		case 10: // lookspring
 			Cvar_SetValue( 'lookspring', ! lookspring.value ? 1 : 0 );
 			break;
 
-		case 12: // lookstrafe
+		case 11: // lookstrafe
 			Cvar_SetValue( 'lookstrafe', ! lookstrafe.value ? 1 : 0 );
 			break;
 
@@ -898,7 +890,7 @@ function M_AdjustSliders( dir ) {
 ==============================================================================
 */
 
-const OPTIONS_ITEMS = 14;
+const OPTIONS_ITEMS = 12;
 let m_options_cursor = 0;
 
 function M_Menu_Options_f() {
@@ -936,27 +928,21 @@ function M_Options_Draw() {
 	r = ( sensitivity.value - 1 ) / 10;
 	M_DrawSlider( 220, 80, r );
 
-	M_Print( 16, 88, '       CD Music Volume' );
-	r = bgmvolume.value;
+	M_Print( 16, 88, '          Sound Volume' );
+	r = volume.value;
 	M_DrawSlider( 220, 88, r );
 
-	M_Print( 16, 96, '          Sound Volume' );
-	r = volume.value;
-	M_DrawSlider( 220, 96, r );
+	M_Print( 16, 96, '            Always Run' );
+	M_DrawCheckbox( 220, 96, cl_forwardspeed.value > 200 );
 
-	M_Print( 16, 104, '            Always Run' );
-	M_DrawCheckbox( 220, 104, cl_forwardspeed.value > 200 );
+	M_Print( 16, 104, '          Invert Mouse' );
+	M_DrawCheckbox( 220, 104, m_pitch.value < 0 );
 
-	M_Print( 16, 112, '          Invert Mouse' );
-	M_DrawCheckbox( 220, 112, m_pitch.value < 0 );
+	M_Print( 16, 112, '            Lookspring' );
+	M_DrawCheckbox( 220, 112, lookspring.value );
 
-	M_Print( 16, 120, '            Lookspring' );
-	M_DrawCheckbox( 220, 120, lookspring.value );
-
-	M_Print( 16, 128, '            Lookstrafe' );
-	M_DrawCheckbox( 220, 128, lookstrafe.value );
-
-	M_Print( 16, 136, '    Use old status bar' );
+	M_Print( 16, 120, '            Lookstrafe' );
+	M_DrawCheckbox( 220, 120, lookstrafe.value );
 
 	// cursor
 	M_DrawCharacter( 200, 32 + m_options_cursor * 8, 12 + ( ( Math.floor( _realtime_get() * 4 ) ) & 1 ) );
