@@ -255,7 +255,7 @@ export async function COM_FetchPak( url, filename, onProgress ) {
 
 			chunks.push( value );
 			received += value.length;
-			onProgress( received / total );
+			onProgress( Math.min( 1, received / total ) );
 
 		}
 
