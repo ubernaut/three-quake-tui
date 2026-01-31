@@ -9,7 +9,7 @@ import { COM_InitArgv } from '../src/common.js';
 import { COM_FetchPak, COM_AddPack } from '../src/pak.js';
 import { Cbuf_Init, Cbuf_Execute, Cbuf_AddText, Cmd_Init } from '../src/cmd.js';
 import { Host_InitCommands } from '../src/host.js';
-import { deathmatch } from '../src/host.js';
+import { deathmatch, samelevel, noexit } from '../src/host.js';
 import { cls, ca_dedicated } from '../src/client.js';
 import { Memory_Init } from '../src/zone.js';
 import { PR_Init } from '../src/pr_edict.js';
@@ -195,6 +195,18 @@ async function Host_Init_Server() {
 	deathmatch.value = 1;
 	deathmatch.string = '1';
 	Sys_Printf('Deathmatch mode enabled (deathmatch=%d)\n', deathmatch.value);
+
+	// Set samelevel to prevent level exits from changing maps (QuakeWorld progs)
+	// 0 = normal (allow exit), 1 = same map, 2 = kill on exit, 3 = kill if not on "start" map
+	samelevel.value = 2;
+	samelevel.string = '2';
+	Sys_Printf('Samelevel mode enabled (samelevel=%d - kills players trying to exit)\n', samelevel.value);
+
+	// Set noexit to prevent level exits from changing maps (standard Quake progs)
+	// 0 = normal (allow exit), 1 = kill on exit, 2 = kill if not on "start" map
+	noexit.value = 1;
+	noexit.string = '1';
+	Sys_Printf('Noexit mode enabled (noexit=%d - kills players trying to exit)\n', noexit.value);
 
 	// Load PAK file
 	Sys_Printf('Loading game data...\n');

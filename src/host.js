@@ -89,8 +89,8 @@ export const fraglimit = new cvar_t( 'fraglimit', '0', false, true );
 export const timelimit = new cvar_t( 'timelimit', '0', false, true );
 export const teamplay = new cvar_t( 'teamplay', '0', false, true );
 
-const samelevel = new cvar_t( 'samelevel', '0' );
-const noexit = new cvar_t( 'noexit', '0', false, true );
+export const samelevel = new cvar_t( 'samelevel', '0' );
+export const noexit = new cvar_t( 'noexit', '0', false, true );
 
 const developer = new cvar_t( 'developer', '0' );
 
