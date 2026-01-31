@@ -79,6 +79,7 @@ let slist_error = '';
 // WT_QueryRooms and WT_CreateRoom will be injected via M_SetExternals
 let _WT_QueryRooms = null;
 let _WT_CreateRoom = null;
+let _cl_name = null;
 
 /**
  * Fetch room list from server via WebTransport
@@ -285,6 +286,7 @@ export function M_SetExternals( externals ) {
 	if ( externals.CL_NextDemo ) _CL_NextDemo = externals.CL_NextDemo;
 	if ( externals.WT_QueryRooms ) _WT_QueryRooms = externals.WT_QueryRooms;
 	if ( externals.WT_CreateRoom ) _WT_CreateRoom = externals.WT_CreateRoom;
+	if ( externals.cl_name ) _cl_name = externals.cl_name;
 
 }
 
@@ -1313,7 +1315,7 @@ function M_GameOptions_Key( key ) {
 					_WT_CreateRoom( serverUrl, {
 						map: mapName,
 						maxPlayers: maxplayers,
-						hostName: 'Player' // TODO: use player name
+						hostName: _cl_name ? _cl_name.string : 'Player'
 					} ).then( ( room ) => {
 
 						if ( room && room.id ) {

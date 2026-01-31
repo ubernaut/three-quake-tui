@@ -330,7 +330,8 @@ export async function Host_Init( parms ) {
 		realtime_get: () => realtime,
 		CL_NextDemo: CL_NextDemo,
 		WT_QueryRooms: WT_QueryRooms,
-		WT_CreateRoom: WT_CreateRoom
+		WT_CreateRoom: WT_CreateRoom,
+		cl_name: cl_name
 	} );
 
 	SCR_Init();
