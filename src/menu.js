@@ -130,7 +130,7 @@ let maxplayers = 4;
 let startepisode = 0;
 let startlevel = 0;
 
-// Level data from original menu.c
+// Level data - shareware Episode 1 + community deathmatch maps
 const levels = [
 	{ name: 'start', description: 'Entrance' }, // 0
 
@@ -143,49 +143,21 @@ const levels = [
 	{ name: 'e1m7', description: 'The House of Chthon' },
 	{ name: 'e1m8', description: 'Ziggurat Vertigo' },
 
-	{ name: 'e2m1', description: 'The Installation' }, // 9
-	{ name: 'e2m2', description: 'Ogre Citadel' },
-	{ name: 'e2m3', description: 'Crypt of Decay' },
-	{ name: 'e2m4', description: 'The Ebon Fortress' },
-	{ name: 'e2m5', description: 'The Wizard\'s Manse' },
-	{ name: 'e2m6', description: 'The Dismal Oubliette' },
-	{ name: 'e2m7', description: 'Underearth' },
-
-	{ name: 'e3m1', description: 'Termination Central' }, // 16
-	{ name: 'e3m2', description: 'The Vaults of Zin' },
-	{ name: 'e3m3', description: 'The Tomb of Terror' },
-	{ name: 'e3m4', description: 'Satan\'s Dark Delight' },
-	{ name: 'e3m5', description: 'Wind Tunnels' },
-	{ name: 'e3m6', description: 'Chambers of Torment' },
-	{ name: 'e3m7', description: 'The Haunted Halls' },
-
-	{ name: 'e4m1', description: 'The Sewage System' }, // 23
-	{ name: 'e4m2', description: 'The Tower of Despair' },
-	{ name: 'e4m3', description: 'The Elder God Shrine' },
-	{ name: 'e4m4', description: 'The Palace of Hate' },
-	{ name: 'e4m5', description: 'Hell\'s Atrium' },
-	{ name: 'e4m6', description: 'The Pain Maze' },
-	{ name: 'e4m7', description: 'Azure Agony' },
-	{ name: 'e4m8', description: 'The Nameless City' },
-
-	{ name: 'end', description: 'Shub-Niggurath\'s Pit' }, // 31
-
-	{ name: 'dm1', description: 'Place of Two Deaths' }, // 32
-	{ name: 'dm2', description: 'Claustrophobopolis' },
-	{ name: 'dm3', description: 'The Abandoned Base' },
-	{ name: 'dm4', description: 'The Bad Place' },
-	{ name: 'dm5', description: 'The Cistern' },
-	{ name: 'dm6', description: 'The Dark Zone' }
+	// Community deathmatch maps (freely distributable)
+	{ name: 'spinev2', description: 'Spine v2 (Headshot)' }, // 9
+	{ name: 'rapture1', description: 'Imminent Boom (Danimal)' },
+	{ name: 'naked5', description: 'Kinky Afro (Gandhi)' },
+	{ name: 'zed', description: 'Zed (Vondur)' },
+	{ name: 'efdm9', description: 'Tangerine Dream (Mr Fribbles)' },
+	{ name: 'baldm6', description: 'Scrap Metal (Bal)' },
+	{ name: 'edc', description: 'Eternal Dismemberment (Tyrann)' },
+	{ name: 'ultrav', description: 'UltraViolence (Escher)' },
 ];
 
 const episodes = [
 	{ description: 'Welcome to Quake', firstLevel: 0, levels: 1 },
 	{ description: 'Doomed Dimension', firstLevel: 1, levels: 8 },
-	{ description: 'Realm of Black Magic', firstLevel: 9, levels: 7 },
-	{ description: 'Netherworld', firstLevel: 16, levels: 7 },
-	{ description: 'The Elder World', firstLevel: 23, levels: 8 },
-	{ description: 'Final Level', firstLevel: 31, levels: 1 },
-	{ description: 'Deathmatch Arena', firstLevel: 32, levels: 6 }
+	{ description: 'Deathmatch Arena', firstLevel: 9, levels: 8 }
 ];
 
 /*
@@ -1238,7 +1210,7 @@ function M_NetStart_Change( dir ) {
 			startepisode += dir;
 
 			// Limit to available episodes (7 for registered, 2 for shareware)
-			const numEpisodes = 7; // TODO: check registered.value
+			const numEpisodes = 3; // Welcome, Episode 1, Deathmatch
 			if ( startepisode < 0 )
 				startepisode = numEpisodes - 1;
 			if ( startepisode >= numEpisodes )

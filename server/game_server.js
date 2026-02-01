@@ -6,7 +6,7 @@
 
 import { Sys_Printf, Sys_FloatTime } from '../src/sys.js';
 import { COM_InitArgv } from '../src/common.js';
-import { COM_FetchPak, COM_AddPack } from '../src/pak.js';
+import { COM_FetchPak, COM_AddPack, COM_PreloadMaps } from '../src/pak.js';
 import { Cbuf_Init, Cbuf_Execute, Cbuf_AddText, Cmd_Init } from '../src/cmd.js';
 import { Host_InitCommands } from '../src/host.js';
 import { deathmatch, samelevel, noexit } from '../src/host.js';
@@ -215,6 +215,19 @@ async function Host_Init_Server() {
 		throw new Error('Failed to load ' + CONFIG.pakPath);
 	}
 	COM_AddPack(pak);
+
+	// Preload custom deathmatch maps (not in PAK files)
+	// Use absolute path for Deno server (maps are in /opt/three-quake/maps/)
+	await COM_PreloadMaps([
+		'spinev2',   // Headshot
+		'rapture1',  // Danimal
+		'naked5',    // Gandhi
+		'zed',       // Vondur
+		'efdm9',     // Mr Fribbles
+		'baldm6',    // Bal
+		'edc',       // Tyrann
+		'ultrav'     // Escher
+	], '/opt/three-quake/maps/');
 
 	// Start listening for connections
 	await net_drivers[1].Listen(true);

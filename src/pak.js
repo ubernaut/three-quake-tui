@@ -170,7 +170,108 @@ export function COM_FindFile( filename ) {
 
 	}
 
+	// Check virtual files (preloaded loose files)
+	if ( virtualFiles.has( search ) ) {
+
+		const data = virtualFiles.get( search );
+		return { data: data, size: data.length };
+
+	}
+
 	return null;
+
+}
+
+/*
+=================
+COM_PreloadLooseFile
+
+Fetches a loose file from URL/path and adds it to virtualFiles.
+Used for custom maps not included in pak files.
+In Deno, reads from filesystem. In browser, uses fetch().
+=================
+*/
+export async function COM_PreloadLooseFile( filename, url ) {
+
+	try {
+
+		let data;
+
+		// Check if running in Deno
+		if ( typeof Deno !== 'undefined' ) {
+
+			// Load from filesystem in Deno
+			try {
+
+				data = await Deno.readFile( url );
+
+			} catch ( e ) {
+
+				return false;
+
+			}
+
+		} else {
+
+			// Browser: use fetch
+			const response = await fetch( url );
+			if ( ! response.ok ) {
+
+				return false;
+
+			}
+
+			const buffer = await response.arrayBuffer();
+			data = new Uint8Array( buffer );
+
+		}
+
+		virtualFiles.set( filename.toLowerCase(), data );
+		return true;
+
+	} catch ( e ) {
+
+		return false;
+
+	}
+
+}
+
+/*
+=================
+COM_PreloadMaps
+
+Preloads loose map files from the maps/ directory.
+basePath is optional - used by Deno server to specify absolute path.
+=================
+*/
+export async function COM_PreloadMaps( mapList, basePath ) {
+
+	let loaded = 0;
+
+	// Default base path, or use provided one (for Deno server)
+	const base = basePath || 'maps/';
+
+	for ( const mapName of mapList ) {
+
+		const filename = 'maps/' + mapName + '.bsp';
+		const url = base + mapName + '.bsp';
+
+		if ( await COM_PreloadLooseFile( filename, url ) ) {
+
+			loaded ++;
+
+		}
+
+	}
+
+	if ( loaded > 0 ) {
+
+		Sys_Printf( 'Preloaded %d custom maps\\n', loaded );
+
+	}
+
+	return loaded;
 
 }
 
