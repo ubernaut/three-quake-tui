@@ -501,10 +501,20 @@ async function _handleLobbyProtocol(
 						maxPlayers: 16,
 						hostName: 'Shared'
 					});
-					// Set maxclients for the auto-created room
-					if (_setMaxClients !== null && room !== null) {
-						Sys_Printf('Setting maxclients to %d for auto-created room %s\n', room.maxPlayers, roomId);
-						_setMaxClients(room.maxPlayers);
+					if (room !== null) {
+						// Set maxclients for the auto-created room
+						if (_setMaxClients !== null) {
+							Sys_Printf('Setting maxclients to %d for auto-created room %s\n', room.maxPlayers, roomId);
+							_setMaxClients(room.maxPlayers);
+						}
+						// Load the map for this room
+						if (_mapChangeCallback !== null && _getCurrentMap !== null) {
+							const currentMap = _getCurrentMap();
+							if (room.map !== currentMap) {
+								Sys_Printf('Loading map %s for auto-created room %s\n', room.map, roomId);
+								await _mapChangeCallback(room.map);
+							}
+						}
 					}
 				}
 
