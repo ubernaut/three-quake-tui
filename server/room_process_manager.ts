@@ -29,6 +29,7 @@ const usedPorts = new Set<number>();
 let certFile = '/etc/letsencrypt/live/wts.mrdoob.com/fullchain.pem';
 let keyFile = '/etc/letsencrypt/live/wts.mrdoob.com/privkey.pem';
 let pakPath = '/opt/three-quake/pak0.pak';
+let denoPath = '/root/.deno/bin/deno';
 
 /**
  * Configure paths for room servers
@@ -37,10 +38,12 @@ export function RoomManager_SetConfig( config: {
 	certFile?: string;
 	keyFile?: string;
 	pakPath?: string;
+	denoPath?: string;
 } ): void {
 	if ( config.certFile != null ) certFile = config.certFile;
 	if ( config.keyFile != null ) keyFile = config.keyFile;
 	if ( config.pakPath != null ) pakPath = config.pakPath;
+	if ( config.denoPath != null ) denoPath = config.denoPath;
 }
 
 /**
@@ -104,7 +107,7 @@ export async function RoomManager_CreateRoom( config: {
 		const denoJsonPath = serverDir.replace( /server\/$/, 'deno.json' );
 
 		// Spawn dedicated server process for this room
-		const command = new Deno.Command( 'deno', {
+		const command = new Deno.Command( denoPath, {
 			args: [
 				'run',
 				'--allow-net',

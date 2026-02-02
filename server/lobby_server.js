@@ -5,6 +5,12 @@
 // Usage: deno run --allow-net --allow-read --allow-run --unstable-net lobby_server.js
 
 import { Sys_Printf } from './sys_server.ts';
+
+// Global unhandled rejection handler - prevent server crashes from async errors
+globalThis.addEventListener( 'unhandledrejection', ( event ) => {
+	Sys_Printf( 'Unhandled promise rejection: %s\n', String( event.reason ) );
+	event.preventDefault(); // Prevent default crash behavior
+} );
 import {
 	RoomManager_SetConfig,
 	RoomManager_CreateRoom,
@@ -49,13 +55,42 @@ const LOBBY_ERROR = 0x82;
 // QUIC endpoint
 let quicEndpoint = null;
 
+// Per-reader buffer storage for leftover bytes
+const _readerBuffers = new WeakMap();
+
+function _getReaderBuffer( reader ) {
+	let buf = _readerBuffers.get( reader );
+	if ( buf == null ) {
+		buf = { data: null, offset: 0 };
+		_readerBuffers.set( reader, buf );
+	}
+	return buf;
+}
+
 /**
- * Read exactly n bytes from a reader
+ * Read exactly n bytes from a reader, with proper buffering
  */
 async function readExact( reader, n ) {
 	const result = new Uint8Array( n );
 	let offset = 0;
+	const buf = _getReaderBuffer( reader );
 
+	// First, use any leftover bytes from previous read
+	if ( buf.data !== null && buf.offset < buf.data.length ) {
+		const available = buf.data.length - buf.offset;
+		const bytesToCopy = Math.min( available, n );
+		result.set( buf.data.subarray( buf.offset, buf.offset + bytesToCopy ), 0 );
+		offset = bytesToCopy;
+		buf.offset += bytesToCopy;
+
+		// Clear buffer if fully consumed
+		if ( buf.offset >= buf.data.length ) {
+			buf.data = null;
+			buf.offset = 0;
+		}
+	}
+
+	// Read more if needed
 	while ( offset < n ) {
 		const { value, done } = await reader.read();
 		if ( done ) return null;
@@ -64,8 +99,11 @@ async function readExact( reader, n ) {
 		result.set( value.subarray( 0, bytesToCopy ), offset );
 		offset += bytesToCopy;
 
-		// TODO: buffer leftover bytes for next read
-		// For lobby protocol this is fine since messages are small
+		// Save leftover bytes for next read
+		if ( bytesToCopy < value.length ) {
+			buf.data = value;
+			buf.offset = bytesToCopy;
+		}
 	}
 
 	return result;
@@ -111,26 +149,60 @@ async function handleSession( wt, address ) {
 
 	try {
 		await wt.ready;
+		Sys_Printf( 'Session ready for %s, waiting for stream...\n', address );
 
-		// Accept bidirectional stream
+		// Accept bidirectional stream with timeout
 		const streamReader = wt.incomingBidirectionalStreams.getReader();
-		const { value: stream, done } = await streamReader.read();
+		const streamPromise = streamReader.read();
+		const timeoutPromise = new Promise( ( _, reject ) =>
+			setTimeout( () => reject( new Error( 'Stream accept timeout' ) ), 30000 )
+		);
+
+		let stream;
+		let done;
+		try {
+			const result = await Promise.race( [ streamPromise, timeoutPromise ] );
+			stream = result.value;
+			done = result.done;
+		} catch ( e ) {
+			streamReader.releaseLock();
+			throw e;
+		}
 		streamReader.releaseLock();
 
 		if ( done || stream == null ) {
+			Sys_Printf( 'No stream received from %s\n', address );
 			wt.close();
 			return;
 		}
+
+		Sys_Printf( 'Stream received from %s, reading message...\n', address );
 
 		const writer = stream.writable.getWriter();
 		const reader = stream.readable.getReader();
 
-		// Read lobby message
-		const msg = await readFramedMessage( reader );
-		if ( msg === null ) {
+		// Read lobby message with timeout
+		const msgPromise = readFramedMessage( reader );
+		const msgTimeoutPromise = new Promise( ( _, reject ) =>
+			setTimeout( () => reject( new Error( 'Message read timeout' ) ), 10000 )
+		);
+
+		let msg;
+		try {
+			msg = await Promise.race( [ msgPromise, msgTimeoutPromise ] );
+		} catch ( e ) {
+			Sys_Printf( 'Message read error from %s: %s\n', address, e.message );
 			wt.close();
 			return;
 		}
+
+		if ( msg === null ) {
+			Sys_Printf( 'Empty message from %s\n', address );
+			wt.close();
+			return;
+		}
+
+		Sys_Printf( 'Received message type %d from %s\n', msg.type, address );
 
 		switch ( msg.type ) {
 			case LOBBY_LIST: {
