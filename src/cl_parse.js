@@ -502,7 +502,9 @@ function CL_ParsePacketEntities( delta ) {
 	let oldp;
 	if ( oldpacket !== - 1 ) {
 
-		if ( seq - oldpacket >= PE_UPDATE_BACKUP - 1 ) {
+		let frameDiff = ( seq & 255 ) - oldpacket;
+		if ( frameDiff < 0 ) frameDiff += 256;
+		if ( frameDiff >= PE_UPDATE_BACKUP - 1 ) {
 
 			// we can't use this, it is too old
 			FlushEntityPacket();
