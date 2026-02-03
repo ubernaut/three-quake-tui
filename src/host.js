@@ -12,14 +12,14 @@ import { STAT_TOTALSECRETS, STAT_TOTALMONSTERS, STAT_SECRETS, STAT_MONSTERS,
 import { NUM_FOR_EDICT, EDICT_NUM, EDICT_TO_PROG, PR_GetString } from './progs.js';
 import { PR_ExecuteProgram } from './pr_exec.js';
 import { sv_player } from './sv_phys.js';
-import { cvar_t, Cvar_RegisterVariable, Cvar_Set, Cvar_SetValue, Cvar_SetServerBroadcast } from './cvar.js';
+import { cvar_t, Cvar_RegisterVariable, Cvar_Set, Cvar_SetValue, Cvar_SetServerBroadcast, Cvar_WriteVariables } from './cvar.js';
 import { Cmd_Init, Cmd_AddCommand, Cbuf_Init, Cbuf_Execute, Cbuf_AddText, Cbuf_InsertText, Cmd_Argc, Cmd_Argv, Cmd_Args, Cmd_ExecuteString, cmd_source, src_command, src_client, Cmd_SetClientCallbacks, Cmd_ForwardToServer } from './cmd.js';
 import { Memory_Init } from './zone.js';
 import { V_Init } from './view.js';
 import { Chase_Init } from './chase.js';
 import { W_LoadWadFile } from './wad.js';
 import { COM_LoadFile } from './pak.js';
-import { Key_Init } from './keys.js';
+import { Key_Init, Key_WriteBindings } from './keys.js';
 import { Con_Init, Con_SetExternals, Con_Printf as RealConPrintf, Con_DPrintf as RealConDPrintf } from './console.js';
 import { M_Init, M_SetExternals } from './menu.js';
 import { PR_Init, ED_NewString, ED_Write, ED_WriteGlobals, ED_ParseGlobals, ED_ParseEdict } from './pr_edict.js';
@@ -450,6 +450,33 @@ export async function Host_Init( parms ) {
 	Cbuf_AddText( 'cl_forwardspeed 400\n' );
 	Cbuf_AddText( 'cl_backspeed 400\n' );
 
+	// Load saved config from localStorage (overrides defaults above)
+	try {
+
+		const savedConfig = localStorage.getItem( CONFIG_STORAGE_KEY );
+		if ( savedConfig !== null ) {
+
+			Cbuf_AddText( savedConfig );
+			Con_Printf( 'Loaded saved config from localStorage\n' );
+
+		}
+
+	} catch ( e ) {
+
+		// localStorage may be unavailable
+	}
+
+	// Save config on page unload
+	if ( typeof window !== 'undefined' ) {
+
+		window.addEventListener( 'beforeunload', function () {
+
+			Host_WriteConfiguration();
+
+		} );
+
+	}
+
 	host_initialized = true;
 
 	Sys_Printf( 'Host_Init complete\n' );
@@ -739,6 +766,34 @@ export function Host_ShutdownServer( crash ) {
 }
 
 /*
+===============
+Host_WriteConfiguration
+
+Writes key bindings and archived cvars to localStorage
+===============
+*/
+const CONFIG_STORAGE_KEY = 'quake_config';
+
+export function Host_WriteConfiguration() {
+
+	if ( host_initialized !== true )
+		return;
+
+	const config = Key_WriteBindings() + Cvar_WriteVariables();
+
+	try {
+
+		localStorage.setItem( CONFIG_STORAGE_KEY, config );
+
+	} catch ( e ) {
+
+		Con_Printf( 'Couldn\'t save config.\n' );
+
+	}
+
+}
+
+/*
 ================
 Host_Shutdown
 
@@ -749,6 +804,8 @@ export function Host_Shutdown() {
 
 	if ( ! host_initialized )
 		return;
+
+	Host_WriteConfiguration();
 
 	host_initialized = false;
 
@@ -1221,10 +1278,14 @@ export function set_noclip_anglehack( v ) {
 
 function Host_God_f() {
 
-	if ( ! sv.active )
+	if ( cmd_source === src_command ) {
+
+		Cmd_ForwardToServer();
 		return;
 
-	if ( pr_global_struct.deathmatch )
+	}
+
+	if ( pr_global_struct.deathmatch && ! host_client.privileged )
 		return;
 
 	sv_player.v.flags = ( sv_player.v.flags | 0 ) ^ FL_GODMODE;
@@ -1237,10 +1298,14 @@ function Host_God_f() {
 
 function Host_Notarget_f() {
 
-	if ( ! sv.active )
+	if ( cmd_source === src_command ) {
+
+		Cmd_ForwardToServer();
 		return;
 
-	if ( pr_global_struct.deathmatch )
+	}
+
+	if ( pr_global_struct.deathmatch && ! host_client.privileged )
 		return;
 
 	sv_player.v.flags = ( sv_player.v.flags | 0 ) ^ FL_NOTARGET;
@@ -1253,10 +1318,14 @@ function Host_Notarget_f() {
 
 function Host_Fly_f() {
 
-	if ( ! sv.active )
+	if ( cmd_source === src_command ) {
+
+		Cmd_ForwardToServer();
 		return;
 
-	if ( pr_global_struct.deathmatch )
+	}
+
+	if ( pr_global_struct.deathmatch && ! host_client.privileged )
 		return;
 
 	if ( sv_player.v.movetype !== MOVETYPE_FLY ) {
@@ -1275,10 +1344,14 @@ function Host_Fly_f() {
 
 function Host_Noclip_f() {
 
-	if ( ! sv.active )
+	if ( cmd_source === src_command ) {
+
+		Cmd_ForwardToServer();
 		return;
 
-	if ( pr_global_struct.deathmatch )
+	}
+
+	if ( pr_global_struct.deathmatch && ! host_client.privileged )
 		return;
 
 	if ( sv_player.v.movetype !== MOVETYPE_NOCLIP ) {
@@ -2065,8 +2138,6 @@ export function SV_ClientPrintf( fmt, ...args ) {
 		MSG_WriteString( host_client.message, msg );
 
 	}
-
-	Con_Printf( '%s', msg );
 
 }
 
