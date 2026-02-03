@@ -589,6 +589,9 @@ export function R_DrawViewModel() {
 let _entityMeshesInScene = new Set();
 let _entityMeshesThisFrame = new Set();
 
+// Pre-allocated vector for dynamic light distance calculation (avoid per-frame allocation)
+const _dlightDist = [ 0, 0, 0 ];
+
 function R_DrawAliasModel( e ) {
 
 	if ( ! e || ! e.model ) return;
@@ -610,8 +613,24 @@ function R_DrawAliasModel( e ) {
 		if ( e === cl.viewent && ambientlight < 24 )
 			ambientlight = shadelight = 24;
 
-		// Dynamic lights are handled by Three.js PointLights now,
-		// so we don't add them to vertex colors here
+		// add dynamic lights to ambient/shade (gl_rmain.c:482-497)
+		for ( let lnum = 0; lnum < MAX_DLIGHTS; lnum ++ ) {
+
+			if ( cl_dlights[ lnum ].die >= cl.time ) {
+
+				VectorSubtract( e.origin, cl_dlights[ lnum ].origin, _dlightDist );
+				const add = cl_dlights[ lnum ].radius - Length( _dlightDist );
+
+				if ( add > 0 ) {
+
+					ambientlight += add;
+					shadelight += add;
+
+				}
+
+			}
+
+		}
 
 		// clamp lighting so it doesn't overbright as much
 		if ( ambientlight > 128 )
