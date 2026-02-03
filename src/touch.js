@@ -36,7 +36,7 @@ let gyroEnabled = false;
 let gyroPermissionRequested = false;
 let prevBeta = null;
 let prevGamma = null;
-const GYRO_SENSITIVITY = 2.0;
+const GYRO_SENSITIVITY = 4.0;
 
 // UI elements
 let overlay = null;
@@ -145,7 +145,7 @@ function Touch_CreateUI( container ) {
 	fireButton.style.cssText = `
 		position: absolute;
 		right: 60px;
-		top: 20px;
+		top: 50px;
 		width: 100px;
 		height: 100px;
 		border-radius: 50%;
@@ -167,7 +167,7 @@ function Touch_CreateUI( container ) {
 	jumpButton.style.cssText = `
 		position: absolute;
 		right: 60px;
-		top: 140px;
+		top: 170px;
 		width: 100px;
 		height: 100px;
 		border-radius: 50%;
@@ -508,8 +508,8 @@ function onDeviceOrientation( e ) {
 
 		}
 
-		lookDeltaX += dYaw * GYRO_SENSITIVITY;
-		lookDeltaY += dPitch * GYRO_SENSITIVITY;
+		lookDeltaX -= dYaw * GYRO_SENSITIVITY;
+		lookDeltaY -= dPitch * GYRO_SENSITIVITY;
 
 	}
 
