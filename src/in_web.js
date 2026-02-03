@@ -683,9 +683,9 @@ export function IN_UpdateTouch() {
 
 	if ( ! isMobile ) return;
 
-	if ( key_dest === key_game && ! cls.demoplayback ) {
+	if ( key_dest === key_game && cls.state === ca_connected && ! cls.demoplayback ) {
 
-		// In game (not demo) - show game controls, hide menu controls
+		// In game (not demo, actually connected) - show game controls, hide menu controls
 		if ( ! Touch_IsEnabled() ) {
 
 			Touch_Enable();
