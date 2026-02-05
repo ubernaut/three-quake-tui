@@ -73,6 +73,14 @@ let lightmap_textures = 0;
 
 const blocklights = new Uint32Array( 18 * 18 );
 
+// Cached buffers for R_AddDynamicLights (Golden Rule #4)
+const _dlight_impact = new Float32Array( 3 );
+const _dlight_local = new Float32Array( 2 );
+
+// Cached buffers for BuildSurfaceDisplayList colinear elimination (Golden Rule #4)
+const _colinear_v1 = new Float32Array( 3 );
+const _colinear_v2 = new Float32Array( 3 );
+
 let active_lightmaps = 0;
 
 // glRect_t equivalent
@@ -1020,14 +1028,15 @@ export function R_AddDynamicLights( surf ) {
 			continue;
 		minlight = rad - minlight;
 
-		const impact = new Float32Array( 3 );
+		// Use cached buffers to avoid per-call allocations (Golden Rule #4)
+		const impact = _dlight_impact;
 		for ( let i = 0; i < 3; i ++ ) {
 
 			impact[ i ] = dl.origin[ i ] - surf.plane.normal[ i ] * dist;
 
 		}
 
-		const local = new Float32Array( 2 );
+		const local = _dlight_local;
 		local[ 0 ] = DotProduct( impact, tex.vecs[ 0 ] ) + tex.vecs[ 0 ][ 3 ];
 		local[ 1 ] = DotProduct( impact, tex.vecs[ 1 ] ) + tex.vecs[ 1 ][ 3 ];
 
@@ -2026,8 +2035,9 @@ export function BuildSurfaceDisplayList( fa ) {
 			const thisIdx = i * VERTEXSIZE;
 			const nextIdx = ( ( i + 1 ) % numverts ) * VERTEXSIZE;
 
-			const v1 = new Float32Array( 3 );
-			const v2 = new Float32Array( 3 );
+			// Use cached buffers to avoid per-iteration allocations (Golden Rule #4)
+			const v1 = _colinear_v1;
+			const v2 = _colinear_v2;
 
 			v1[ 0 ] = poly.verts[ thisIdx + 0 ] - poly.verts[ prevIdx + 0 ];
 			v1[ 1 ] = poly.verts[ thisIdx + 1 ] - poly.verts[ prevIdx + 1 ];
