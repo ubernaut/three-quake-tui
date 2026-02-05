@@ -1733,6 +1733,9 @@ export function R_DrawWaterSurfaces() {
 // R_MarkLeaves
 //============================================================================
 
+// Cached buffer for r_novis solid visibility (matches C's static byte solid[4096])
+let _markleaves_solid = new Uint8Array( 4096 );
+
 export function R_MarkLeaves() {
 
 	const cl_ref = cl;
@@ -1762,8 +1765,14 @@ export function R_MarkLeaves() {
 
 		// mark everything visible (also when r_viewleaf is null - player outside map)
 		const numBytes = ( cl_ref.worldmodel.numleafs + 7 ) >> 3;
-		vis = new Uint8Array( numBytes );
-		vis.fill( 0xff );
+		if ( _markleaves_solid.length < numBytes ) {
+
+			_markleaves_solid = new Uint8Array( numBytes );
+
+		}
+
+		_markleaves_solid.fill( 0xff, 0, numBytes );
+		vis = _markleaves_solid;
 
 	} else {
 
