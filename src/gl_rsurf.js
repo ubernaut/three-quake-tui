@@ -1087,7 +1087,10 @@ export function R_BuildLightMap( surf, dest, destOffset, stride ) {
 	surf.cached_dlight = ( surf.dlightframe === r_framecount );
 
 	// set to full bright if no light data
-	if ( r_fullbright.value || ! lightmap ) {
+	// C code: r_fullbright.value || !cl.worldmodel->lightdata
+	// This checks the WORLD's lightdata, not the individual surface's samples.
+	// Surfaces with no samples but in a lit world should be dark, not fullbright.
+	if ( r_fullbright.value || ( cl.worldmodel != null && cl.worldmodel.lightdata == null ) ) {
 
 		for ( let i = 0; i < size; i ++ )
 			blocklights[ i ] = 255 * 256;
@@ -1099,7 +1102,7 @@ export function R_BuildLightMap( surf, dest, destOffset, stride ) {
 			blocklights[ i ] = 0;
 
 		// add all the lightmaps
-		if ( lightmap ) {
+		if ( lightmap != null ) {
 
 			for ( let maps = 0; maps < MAXLIGHTMAPS && surf.styles[ maps ] !== 255; maps ++ ) {
 
