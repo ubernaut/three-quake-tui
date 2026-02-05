@@ -1059,7 +1059,8 @@ function M_LanConfig_Key( key ) {
 					// Connect directly to room server on its port
 					const urlObj = new URL( serverUrl.replace( /^wt(s)?:\/\//, 'https://' ) );
 					urlObj.port = String( room.port );
-					connectUrl = urlObj.toString().replace( /^https:\/\//, 'wts://' );
+					// Remove trailing slash - URL.toString() adds one which breaks wts:// URLs
+					connectUrl = urlObj.toString().replace( /\/$/, '' ).replace( /^https:\/\//, 'wts://' );
 
 				} else {
 
@@ -1315,7 +1316,8 @@ function M_GameOptions_Key( key ) {
 								// Connect directly to room server on its port
 								const urlObj = new URL( serverUrl.replace( /^wt(s)?:\/\//, 'https://' ) );
 								urlObj.port = String( room.port );
-								connectUrl = urlObj.toString().replace( /^https:\/\//, 'wts://' );
+								// Remove trailing slash - URL.toString() adds one which breaks wts:// URLs
+								connectUrl = urlObj.toString().replace( /\/$/, '' ).replace( /^https:\/\//, 'wts://' );
 
 							} else {
 

@@ -317,7 +317,6 @@ export function SV_ConnectClient( clientnum ) {
 
 	const client = svs.clients[ clientnum ];
 
-	console.log( '[MP] SV_ConnectClient: slot', clientnum, 'entity', clientnum + 1 );
 	Con_DPrintf( 'Client ' + client.netconnection.address + ' connected\n' );
 
 	const edictnum = clientnum + 1;
@@ -426,7 +425,24 @@ export function SV_ClearDatagram() {
 SV_SendClientMessages
 =======================
 */
+// Diagnostic counters
+let _sendMsgCallCount = 0;
+let _sendMsgActiveCount = 0;
+let _sendMsgSpawnedCount = 0;
+let _sendMsgDatagramCount = 0;
+let _sendMsgDatagramFailed = 0;
+
 export function SV_SendClientMessages() {
+
+	_sendMsgCallCount ++;
+
+	// Log stats every 100 calls (5 seconds at 20Hz)
+	if ( _sendMsgCallCount % 100 === 0 ) {
+
+		Con_Printf( '[SV_SendClientMessages] calls=%d active=%d spawned=%d datagram=%d failed=%d\n',
+			_sendMsgCallCount, _sendMsgActiveCount, _sendMsgSpawnedCount, _sendMsgDatagramCount, _sendMsgDatagramFailed );
+
+	}
 
 	// update frags, names, etc
 	SV_UpdateToReliableMessages();
@@ -440,10 +456,20 @@ export function SV_SendClientMessages() {
 		if ( ! client.active )
 			continue;
 
+		_sendMsgActiveCount ++;
+
 		if ( client.spawned ) {
 
-			if ( ! SV_SendClientDatagram( client ) )
+			_sendMsgSpawnedCount ++;
+
+			if ( ! SV_SendClientDatagram( client ) ) {
+
+				_sendMsgDatagramFailed ++;
 				continue;
+
+			}
+
+			_sendMsgDatagramCount ++;
 
 		} else {
 
@@ -1277,8 +1303,10 @@ function SV_SendClientDatagram( client ) {
 	client.outgoing_sequence ++;
 
 	// send the datagram
-	if ( NET_SendUnreliableMessage( client.netconnection, _scdMsg ) === - 1 ) {
+	const sendResult = NET_SendUnreliableMessage( client.netconnection, _scdMsg );
+	if ( sendResult === - 1 ) {
 
+		Con_Printf( 'SV_SendClientDatagram: NET_SendUnreliableMessage returned -1, dropping client %s\n', client.name );
 		SV_DropClient( true );
 		return false;
 

@@ -411,24 +411,23 @@ function _startBackgroundReaders(
 }
 
 /**
- * Read a framed message from the reliable stream
- * Frame format: [type:1][length:2][data:N]
- * Returns: { type: number, data: Uint8Array } or null on error
+ * Read a framed message from the stream
+ * Frame format: [length:2][data:N]
+ * Returns: { data: Uint8Array } or null on error
  */
 async function _readFramedMessage(
 	reader: ReadableStreamDefaultReader<Uint8Array>
-): Promise<{ type: number; data: Uint8Array } | null> {
-	// Read header (3 bytes)
-	const header = await _readExact(reader, 3);
+): Promise<{ data: Uint8Array } | null> {
+	// Read header (2 bytes)
+	const header = await _readExact(reader, 2);
 	if (!header) {
 		return null;
 	}
 
-	const type = header[0];
-	const length = header[1] | (header[2] << 8);
+	const length = header[0] | (header[1] << 8);
 
 	if (length === 0) {
-		return { type, data: new Uint8Array(0) };
+		return { data: new Uint8Array(0) };
 	}
 
 	// Read message data
@@ -437,7 +436,7 @@ async function _readFramedMessage(
 		return null;
 	}
 
-	return { type, data };
+	return { data };
 }
 
 // Buffer for leftover bytes from previous reads (per-reader tracking)
@@ -720,12 +719,11 @@ export function WT_QSendMessage(
 		return -1;
 	}
 
-	// Frame the message: [type=1][length:2][data:N]
-	const frame = new Uint8Array(3 + data.cursize);
-	frame[0] = 1; // reliable type
-	frame[1] = data.cursize & 0xff;
-	frame[2] = (data.cursize >> 8) & 0xff;
-	frame.set(data.data.subarray(0, data.cursize), 3);
+	// Frame the message: [length:2][data:N]
+	const frame = new Uint8Array(2 + data.cursize);
+	frame[0] = data.cursize & 0xff;
+	frame[1] = (data.cursize >> 8) & 0xff;
+	frame.set(data.data.subarray(0, data.cursize), 2);
 
 	conn.reliableWriter.write(frame).catch((err) => {
 		Sys_Printf('WT_QSendMessage: write FAILED: %s\n', (err as Error).message);
@@ -745,12 +743,11 @@ export function WT_SendUnreliableMessage(
 	const conn = sock.driverdata;
 	if (!conn || !conn.connected || !conn.unreliableWriter) return -1;
 
-	// Frame the message: [type=2][length:2][data:N]
-	const frame = new Uint8Array(3 + data.cursize);
-	frame[0] = 2; // unreliable type
-	frame[1] = data.cursize & 0xff;
-	frame[2] = (data.cursize >> 8) & 0xff;
-	frame.set(data.data.subarray(0, data.cursize), 3);
+	// Frame the message: [length:2][data:N]
+	const frame = new Uint8Array(2 + data.cursize);
+	frame[0] = data.cursize & 0xff;
+	frame[1] = (data.cursize >> 8) & 0xff;
+	frame.set(data.data.subarray(0, data.cursize), 2);
 
 	conn.unreliableWriter.write(frame).catch(() => {
 		// Unreliable — silently fail

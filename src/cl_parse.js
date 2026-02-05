@@ -1192,8 +1192,11 @@ export function CL_ParseServerMessage() {
 
 	while ( true ) {
 
-		if ( msg_badread )
+		if ( msg_badread ) {
+
 			Host_Error( 'CL_ParseServerMessage: Bad server message' );
+
+		}
 
 		cmd = MSG_ReadByte();
 

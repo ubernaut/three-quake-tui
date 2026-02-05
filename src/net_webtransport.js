@@ -32,12 +32,17 @@ class WebTransportConnection {
 	constructor( transport ) {
 
 		this.transport = transport;
+
+		// TWO-STREAM PROTOCOL:
+		// Stream 1 (reliable): signon messages, stringcmds
+		// Stream 2 (unreliable): entity updates, movement
 		this.reliableStream = null;
 		this.reliableWriter = null;
 		this.reliableReader = null;
 		this.unreliableStream = null;
 		this.unreliableWriter = null;
 		this.unreliableReader = null;
+
 		this.pendingMessages = []; // { reliable: boolean, data: Uint8Array }
 		this.connected = false;
 		this.error = null;
@@ -335,34 +340,26 @@ export async function WT_CreateRoom( serverUrl, config ) {
 	try {
 
 		// Create the WebTransport connection
-		console.log( 'WT_CreateRoom: Creating WebTransport connection...' );
 		transport = new WebTransport( url );
 		await transport.ready;
-		console.log( 'WT_CreateRoom: Transport ready' );
 
 		// Create bidirectional stream
-		console.log( 'WT_CreateRoom: Creating bidirectional stream...' );
 		const stream = await transport.createBidirectionalStream();
-		console.log( 'WT_CreateRoom: Stream created' );
 		const writer = stream.writable.getWriter();
 		const reader = stream.readable.getReader();
 
 		// Send LOBBY_CREATE request: [type:1][length:2][json config]
 		const configJson = JSON.stringify( config );
-		console.log( 'WT_CreateRoom: Sending config:', configJson );
 		const configData = new TextEncoder().encode( configJson );
 		const request = new Uint8Array( 3 + configData.length );
 		request[ 0 ] = LOBBY_CREATE;
 		request[ 1 ] = configData.length & 0xff;
 		request[ 2 ] = ( configData.length >> 8 ) & 0xff;
 		request.set( configData, 3 );
-		console.log( 'WT_CreateRoom: Writing request...' );
 		await writer.write( request );
-		console.log( 'WT_CreateRoom: Request written, waiting for response...' );
 
 		// Read response header
 		const headerResult = await _readExact( reader, 3 );
-		console.log( 'WT_CreateRoom: Got header:', headerResult );
 		if ( ! headerResult ) {
 
 			throw new Error( 'Connection closed' );
@@ -569,15 +566,10 @@ export async function WT_Connect( host ) {
 		const conn = new WebTransportConnection( transport );
 		conn.connected = true;
 
-		// Create bidirectional stream for reliable messages
+		// Create bidirectional stream for lobby protocol
 		conn.reliableStream = await transport.createBidirectionalStream();
 		conn.reliableWriter = conn.reliableStream.writable.getWriter();
 		conn.reliableReader = conn.reliableStream.readable.getReader();
-
-		// Create second bidirectional stream for unreliable messages
-		conn.unreliableStream = await transport.createBidirectionalStream();
-		conn.unreliableWriter = conn.unreliableStream.writable.getWriter();
-		conn.unreliableReader = conn.unreliableStream.readable.getReader();
 
 		// If joining a room, send LOBBY_JOIN message first
 		if ( roomId ) {
@@ -678,46 +670,21 @@ export async function WT_Connect( host ) {
 
 			}
 
-			// If we got game data, put it back for the game to read
-			if ( firstMsg.data && firstMsg.data.length > 0 ) {
-
-				conn.pendingMessages.push( { reliable: true, data: firstMsg.data } );
-
-			}
+			// Server responded but didn't redirect - use same-port direct connection
+			// Close lobby connection and reconnect with two-stream protocol
+			Con_Printf( 'Room on same port, reconnecting...\n' );
+			transport.close();
+			NET_FreeQSocket( sock );
+			return await _WT_ConnectDirect( url, host );
 
 		}
 
-		// Two QUIC bidirectional streams are used:
-		// Stream 1 (reliable) for signon data, stringcmds, name/frag changes
-		// Stream 2 (unreliable) for entity updates, clientdata, clc_move
-
-		// Store connection
-		sock.driverdata = conn;
-		wt_connections.set( sock, conn );
-
-		// Start background readers
-		_WT_StartBackgroundReaders( sock, conn );
-
-		// Handle connection close
-		// Per original Quake design: don't set sock.disconnected here
-		// Only set conn.connected = false, which makes WT_QGetMessage return -1
-		// This triggers proper cleanup via Host_Error -> CL_Disconnect -> NET_Close
-		transport.closed.then( () => {
-
-			Con_Printf( 'WebTransport connection closed\n' );
-			conn.connected = false;
-			// Note: Don't set sock.disconnected - that's only set by NET_FreeQSocket
-
-		} ).catch( ( error ) => {
-
-			Con_Printf( 'WebTransport connection error: ' + error.message + '\n' );
-			conn.connected = false;
-			conn.error = error;
-			// Note: Don't set sock.disconnected - that's only set by NET_FreeQSocket
-
-		} );
-
-		return sock;
+		// No room ID - connect directly using two-stream protocol
+		// (This path is for direct server connections without lobby)
+		Con_Printf( 'No room ID, using direct connection\n' );
+		transport.close();
+		NET_FreeQSocket( sock );
+		return await _WT_ConnectDirect( url, host );
 
 	} catch ( error ) {
 
@@ -747,6 +714,11 @@ _WT_ConnectDirect
 
 Connect directly to a room server (no lobby protocol)
 Used when redirected from lobby to a room server on a different port
+
+TWO-STREAM PROTOCOL:
+- Stream 1 (reliable): signon messages, stringcmds
+- Stream 2 (unreliable): entity updates, movement
+Frame format: [length:2][data...]
 =============
 */
 async function _WT_ConnectDirect( url, originalHost ) {
@@ -780,28 +752,27 @@ async function _WT_ConnectDirect( url, originalHost ) {
 		const conn = new WebTransportConnection( transport );
 		conn.connected = true;
 
-		// Create bidirectional stream for reliable messages
+		// TWO-STREAM PROTOCOL:
+		// Stream 1 (reliable): signon messages, stringcmds
+		// Stream 2 (unreliable): entity updates, movement
+
+		// Create first bidirectional stream (reliable channel)
 		conn.reliableStream = await transport.createBidirectionalStream();
 		conn.reliableWriter = conn.reliableStream.writable.getWriter();
 		conn.reliableReader = conn.reliableStream.readable.getReader();
+		Con_Printf( 'Reliable stream ready\n' );
 
-		// Create second bidirectional stream for unreliable messages
+		// Create second bidirectional stream (unreliable channel)
 		conn.unreliableStream = await transport.createBidirectionalStream();
 		conn.unreliableWriter = conn.unreliableStream.writable.getWriter();
 		conn.unreliableReader = conn.unreliableStream.readable.getReader();
-
-		// Room servers in direct mode don't need lobby protocol
-		// Just set up the connection and let the game proceed
-
-		// Two QUIC bidirectional streams are used:
-		// Stream 1 (reliable) for signon data, stringcmds, name/frag changes
-		// Stream 2 (unreliable) for entity updates, clientdata, clc_move
+		Con_Printf( 'Unreliable stream ready\n' );
 
 		// Store connection
 		sock.driverdata = conn;
 		wt_connections.set( sock, conn );
 
-		// Start background readers
+		// Start background stream readers
 		_WT_StartBackgroundReaders( sock, conn );
 
 		// Handle connection close
@@ -851,22 +822,47 @@ async function _WT_ConnectDirect( url, originalHost ) {
 =============
 _WT_StartBackgroundReaders
 
-Start background readers for reliable and unreliable streams
+Start background readers for both streams
+
+TWO-STREAM PROTOCOL:
+- Stream 1 (reliable): signon messages, stringcmds - frame format: [length:2][data...]
+- Stream 2 (unreliable): entity updates, movement - frame format: [length:2][data...]
 =============
 */
 function _WT_StartBackgroundReaders( sock, conn ) {
 
-	// Read reliable messages from the first bidirectional stream
+	Con_Printf( 'Starting stream readers...\n' );
+
+	// Reliable stream reader
 	( async () => {
+
+		let buffer = new Uint8Array( 0 );
 
 		try {
 
-			while ( conn.connected ) {
+			while ( conn.connected && conn.reliableReader ) {
 
-				const msg = await _WT_ReadFramedMessageWithType( conn.reliableReader );
-				if ( msg === null ) break;
+				const { value, done } = await conn.reliableReader.read();
+				if ( done || value === undefined || value.length === 0 ) break;
 
-				conn.pendingMessages.push( { reliable: true, data: msg.data } );
+				// Append to buffer
+				const newBuffer = new Uint8Array( buffer.length + value.length );
+				newBuffer.set( buffer );
+				newBuffer.set( value, buffer.length );
+				buffer = newBuffer;
+
+				// Process complete frames: [length:2][data...]
+				while ( buffer.length >= 2 ) {
+
+					const length = buffer[ 0 ] | ( buffer[ 1 ] << 8 );
+					if ( buffer.length < 2 + length ) break;
+
+					const data = buffer.subarray( 2, 2 + length );
+					buffer = buffer.subarray( 2 + length );
+
+					conn.pendingMessages.push( { reliable: true, data: new Uint8Array( data ) } );
+
+				}
 
 			}
 
@@ -874,8 +870,7 @@ function _WT_StartBackgroundReaders( sock, conn ) {
 
 			if ( conn.connected ) {
 
-				Con_DPrintf( 'Reliable stream reader error: ' + error.message + '\n' );
-				conn.error = error;
+				Con_DPrintf( 'Reliable reader error: ' + error.message + '\n' );
 
 			}
 
@@ -883,17 +878,36 @@ function _WT_StartBackgroundReaders( sock, conn ) {
 
 	} )();
 
-	// Read unreliable messages from the second bidirectional stream
+	// Unreliable stream reader
 	( async () => {
+
+		let buffer = new Uint8Array( 0 );
 
 		try {
 
-			while ( conn.connected ) {
+			while ( conn.connected && conn.unreliableReader ) {
 
-				const msg = await _WT_ReadFramedMessageWithType( conn.unreliableReader );
-				if ( msg === null ) break;
+				const { value, done } = await conn.unreliableReader.read();
+				if ( done || value === undefined || value.length === 0 ) break;
 
-				conn.pendingMessages.push( { reliable: false, data: msg.data } );
+				// Append to buffer
+				const newBuffer = new Uint8Array( buffer.length + value.length );
+				newBuffer.set( buffer );
+				newBuffer.set( value, buffer.length );
+				buffer = newBuffer;
+
+				// Process complete frames: [length:2][data...]
+				while ( buffer.length >= 2 ) {
+
+					const length = buffer[ 0 ] | ( buffer[ 1 ] << 8 );
+					if ( buffer.length < 2 + length ) break;
+
+					const data = buffer.subarray( 2, 2 + length );
+					buffer = buffer.subarray( 2 + length );
+
+					conn.pendingMessages.push( { reliable: false, data: new Uint8Array( data ) } );
+
+				}
 
 			}
 
@@ -901,8 +915,7 @@ function _WT_StartBackgroundReaders( sock, conn ) {
 
 			if ( conn.connected ) {
 
-				Con_DPrintf( 'Unreliable stream reader error: ' + error.message + '\n' );
-				conn.error = error;
+				Con_DPrintf( 'Unreliable reader error: ' + error.message + '\n' );
 
 			}
 
@@ -1064,7 +1077,11 @@ Returns:
 export function WT_QGetMessage( sock ) {
 
 	const conn = sock.driverdata;
-	if ( ! conn ) return - 1;
+	if ( ! conn ) {
+
+		return - 1;
+
+	}
 
 	if ( ! conn.connected && conn.pendingMessages.length === 0 ) {
 
@@ -1112,16 +1129,18 @@ export function WT_QGetMessage( sock ) {
 =============
 WT_QSendMessage
 
-Send a reliable message
+Send a reliable message via the reliable stream.
+Frame format: [length:2][data...]
+QUIC streams handle ordering and retransmission.
 =============
 */
 export function WT_QSendMessage( sock, data ) {
 
 	const conn = sock.driverdata;
-	if ( ! conn || ! conn.connected ) return - 1;
+	if ( conn == null || ! conn.connected ) return - 1;
 
 	// Check for previous async error (detected on last call)
-	if ( conn.error ) {
+	if ( conn.error != null ) {
 
 		Con_DPrintf( 'WT_QSendMessage: previous error detected, connection dead\n' );
 		conn.connected = false;
@@ -1129,27 +1148,25 @@ export function WT_QSendMessage( sock, data ) {
 
 	}
 
-	// Frame the message: [type:1][length:2][data:N]
-	const frame = new Uint8Array( 3 + data.cursize );
-	frame[ 0 ] = 1; // reliable type
-	frame[ 1 ] = data.cursize & 0xff;
-	frame[ 2 ] = ( data.cursize >> 8 ) & 0xff;
-	frame.set( data.data.subarray( 0, data.cursize ), 3 );
+	if ( conn.reliableWriter == null ) {
 
-	// Track pending sends for debugging
-	conn.pendingSends = ( conn.pendingSends || 0 ) + 1;
+		Con_DPrintf( 'WT_QSendMessage: no reliableWriter\n' );
+		return - 1;
 
-	// Send asynchronously - error will be detected on next send attempt
-	conn.reliableWriter.write( frame ).then( () => {
+	}
 
-		conn.pendingSends --;
+	// Frame the message: [length:2][data...]
+	const frame = new Uint8Array( 2 + data.cursize );
+	frame[ 0 ] = data.cursize & 0xff;
+	frame[ 1 ] = ( data.cursize >> 8 ) & 0xff;
+	frame.set( data.data.subarray( 0, data.cursize ), 2 );
 
-	} ).catch( ( error ) => {
+	// Send asynchronously - QUIC handles reliability
+	conn.reliableWriter.write( frame ).catch( ( error ) => {
 
 		Con_Printf( 'WT_QSendMessage error: ' + error.message + '\n' );
 		conn.connected = false;
 		conn.error = error;
-		conn.pendingSends --;
 
 	} );
 
@@ -1161,13 +1178,14 @@ export function WT_QSendMessage( sock, data ) {
 =============
 WT_SendUnreliableMessage
 
-Send an unreliable message over the second bidirectional stream (unreliable channel).
+Send an unreliable message via the unreliable stream.
+Frame format: [length:2][data...]
 =============
 */
 export function WT_SendUnreliableMessage( sock, data ) {
 
 	const conn = sock.driverdata;
-	if ( ! conn || ! conn.connected ) {
+	if ( conn == null || ! conn.connected ) {
 
 		Con_DPrintf( 'WT_SendUnreliableMessage: no connection\n' );
 		return - 1;
@@ -1189,23 +1207,16 @@ export function WT_SendUnreliableMessage( sock, data ) {
 
 	}
 
-	// Frame as [type=2][length:2][data:N] and send on the unreliable stream
-	const frame = new Uint8Array( 3 + data.cursize );
-	frame[ 0 ] = 2; // unreliable type
-	frame[ 1 ] = data.cursize & 0xff;
-	frame[ 2 ] = ( data.cursize >> 8 ) & 0xff;
-	frame.set( data.data.subarray( 0, data.cursize ), 3 );
+	// Frame the message: [length:2][data...]
+	const frame = new Uint8Array( 2 + data.cursize );
+	frame[ 0 ] = data.cursize & 0xff;
+	frame[ 1 ] = ( data.cursize >> 8 ) & 0xff;
+	frame.set( data.data.subarray( 0, data.cursize ), 2 );
 
-	// Send asynchronously
-	conn.unreliableWriter.write( frame ).then( () => {
+	// Send via unreliable stream
+	conn.unreliableWriter.write( frame ).catch( () => {
 
-		// Success
-
-	} ).catch( ( error ) => {
-
-		Con_Printf( 'WT_SendUnreliableMessage: write failed: ' + error.message + '\n' );
-		conn.error = error;
-		conn.connected = false;
+		// Unreliable — silently fail
 
 	} );
 
@@ -1261,16 +1272,33 @@ export function WT_Close( sock ) {
 
 	try {
 
-		// Close writers
+		// Cancel stream readers first to unblock pending reads
+		if ( conn.reliableReader ) {
+
+			conn.reliableReader.cancel().catch( () => {} );
+			conn.reliableReader = null;
+
+		}
+
+		if ( conn.unreliableReader ) {
+
+			conn.unreliableReader.cancel().catch( () => {} );
+			conn.unreliableReader = null;
+
+		}
+
+		// Release stream writers
 		if ( conn.reliableWriter ) {
 
 			conn.reliableWriter.close().catch( () => {} );
+			conn.reliableWriter = null;
 
 		}
 
 		if ( conn.unreliableWriter ) {
 
 			conn.unreliableWriter.close().catch( () => {} );
+			conn.unreliableWriter = null;
 
 		}
 

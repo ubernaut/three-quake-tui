@@ -950,9 +950,30 @@ function Host_Connect_f() {
 
 	}
 
+	// Use Cmd_Argv(1) to get the server address
+	// When quoted (e.g., connect "wts://host:port"), Cmd_Argv(1) properly returns the unquoted URL
+	// Cmd_Args() would include the quotes which breaks URL parsing
 	const name = Cmd_Argv( 1 );
-	CL_EstablishConnection( name );
-	Host_Reconnect_f();
+	if ( ! name || name.length === 0 ) {
+
+		Con_Printf( 'usage: connect <server>\n' );
+		return;
+
+	}
+
+	Con_Printf( 'Connecting to %s...\n', name );
+
+	// CL_EstablishConnection is async (WebTransport handshake)
+	// Use .then() to call Host_Reconnect_f when connection succeeds
+	CL_EstablishConnection( name ).then( () => {
+
+		Host_Reconnect_f();
+
+	} ).catch( ( e ) => {
+
+		Con_Printf( 'connect: %s\n', e.message );
+
+	} );
 
 }
 

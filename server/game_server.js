@@ -113,6 +113,33 @@ setInterval(() => {
 	console.error('[WATCHDOG] tick=' + watchdogCount + ' time=' + Math.floor(performance.now() / 1000));
 }, 5000);
 
+// Connection health monitor: detects stuck writers (writes that never complete)
+const WRITE_TIMEOUT_MS = 10000;  // 10 seconds
+
+function checkConnectionHealth() {
+	const now = Date.now();
+
+	for (let i = 0; i < svs.maxclients; i++) {
+		const client = svs.clients[i];
+		if (!client.active || !client.netconnection) continue;
+
+		const conn = client.netconnection.driverdata;
+		if (conn === null || conn === undefined) continue;
+
+		// Detect stuck writers
+		if (conn.pendingWrites > 0) {
+			const writeAge = now - conn.lastWriteTime;
+			if (writeAge > WRITE_TIMEOUT_MS) {
+				console.error('[Health] Client %d write timeout (%d pending, %dms stale)',
+					i, conn.pendingWrites, writeAge);
+				conn.connected = false;
+			}
+		}
+	}
+}
+
+setInterval(checkConnectionHealth, 5000);
+
 /**
  * Initialize the game server
  */
@@ -360,7 +387,16 @@ async function runServerLoop() {
 	const tickInterval = ticrate * 1000;
 	Sys_Printf('Starting server loop at ' + ( 1 / ticrate ) + ' Hz (sys_ticrate ' + ticrate + ')...\n');
 
+	let gameLoopCallCount = 0;
+
 	setInterval(() => {
+		gameLoopCallCount++;
+
+		// Log every call to detect when game loop stops
+		if (gameLoopCallCount <= 10 || gameLoopCallCount % 100 === 0) {
+			Sys_Printf('[GameLoop] Call #%d\n', gameLoopCallCount);
+		}
+
 		try {
 			Host_ServerFrame();
 		} catch (error) {
