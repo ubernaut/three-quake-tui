@@ -20,7 +20,8 @@ import { R_RenderView } from './gl_rmain.js';
 import { R_PushDlights } from './gl_rlight.js';
 import { con_forcedup } from './console.js';
 import { VID_UpdateGamma } from './vid.js';
-import { cl_simorg, cl_simvel, cl_simangles, cl_simonground, cl_nopred } from './cl_pred.js';
+import { scr_viewsize } from './gl_screen.js';
+import { cl_simorg, cl_simvel, cl_simangles, cl_simonground, cl_nopred, cl_prediction_active } from './cl_pred.js';
 
 /*
 
@@ -787,10 +788,8 @@ export function V_CalcRefdef() {
 
 	// Use predicted position for local player when running remotely (QuakeWorld-style prediction)
 	// Use server-interpolated position when running locally, during demos, or if prediction is disabled
-	// Also fall back to ent.origin if prediction hasn't been initialized (cl_simorg is zero)
-	const usePrediction = ( ! sv.active ) && ( ! cls.demoplayback ) && ( cl_nopred.value === 0 );
-	const predictionInitialized = cl_simorg[ 0 ] !== 0 || cl_simorg[ 1 ] !== 0 || cl_simorg[ 2 ] !== 0;
-	const playerorg = ( usePrediction && predictionInitialized ) ? cl_simorg : ent.origin;
+	const usePrediction = ( sv.active === false ) && ( cls.demoplayback === false ) && ( cl_nopred.value === 0 ) && cl_prediction_active;
+	const playerorg = usePrediction ? cl_simorg : ent.origin;
 
 	// transform the view offset by the model's matrix to get the offset from
 	// model origin for the view
@@ -818,7 +817,7 @@ export function V_CalcRefdef() {
 	const forward = new Float32Array( 3 );
 	const right = new Float32Array( 3 );
 	const up = new Float32Array( 3 );
-	if ( usePrediction && predictionInitialized ) {
+	if ( usePrediction ) {
 		AngleVectors( cl_simangles, forward, right, up );
 	} else {
 		// Use entity angles like WinQuake for local play
@@ -837,7 +836,7 @@ export function V_CalcRefdef() {
 	V_BoundOffsets( playerorg );
 
 	// set up gun position - QuakeWorld uses simangles for prediction
-	if ( usePrediction && predictionInitialized ) {
+	if ( usePrediction ) {
 		VectorCopy( cl_simangles, view.angles );
 	} else {
 		VectorCopy( cl.viewangles, view.angles );
@@ -858,14 +857,14 @@ export function V_CalcRefdef() {
 
 	// fudge position around to keep amount of weapon visible
 	// roughly equal with different FOV
-	// if ( scr_viewsize.value === 110 )
-	//     view.origin[2] += 1;
-	// else if ( scr_viewsize.value === 100 )
-	//     view.origin[2] += 2;
-	// else if ( scr_viewsize.value === 90 )
-	//     view.origin[2] += 1;
-	// else if ( scr_viewsize.value === 80 )
-	//     view.origin[2] += 0.5;
+	if ( scr_viewsize.value === 110 )
+		view.origin[ 2 ] += 1;
+	else if ( scr_viewsize.value === 100 )
+		view.origin[ 2 ] += 2;
+	else if ( scr_viewsize.value === 90 )
+		view.origin[ 2 ] += 1;
+	else if ( scr_viewsize.value === 80 )
+		view.origin[ 2 ] += 0.5;
 
 	view.model = cl.model_precache[ cl.stats[ STAT_WEAPON ] ];
 	view.frame = cl.stats[ STAT_WEAPONFRAME ];
@@ -876,7 +875,7 @@ export function V_CalcRefdef() {
 
 	// smooth out stair step ups
 	// QuakeWorld uses predicted onground state
-	const onGround = ( usePrediction && predictionInitialized ) ? ( cl_simonground !== -1 ) : cl.onground;
+	const onGround = usePrediction ? ( cl_simonground !== -1 ) : cl.onground;
 	if ( onGround && playerorg[ 2 ] - _oldz > 0 ) {
 
 		let steptime = cl.time - cl.oldtime;
