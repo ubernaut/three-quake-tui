@@ -292,12 +292,6 @@ function onTouchStart( e ) {
 
 	}
 
-	// Debug: log which element received the touch
-	console.log( 'Touch start on:', e.currentTarget === joystickArea ? 'joystickArea' :
-		e.currentTarget === lookArea ? 'lookArea' :
-			e.currentTarget === fireButton ? 'fireButton' :
-				e.currentTarget === pauseButton ? 'pauseButton' : 'unknown' );
-
 	for ( const touch of e.changedTouches ) {
 
 		const target = e.currentTarget;
@@ -562,10 +556,6 @@ function Gyro_Enable() {
 	prevBeta = null;
 	prevGamma = null;
 	window.addEventListener( 'deviceorientation', onDeviceOrientation );
-	const angle = ( screen.orientation && screen.orientation.angle !== undefined )
-		? screen.orientation.angle
-		: ( window.orientation || 0 );
-	console.log( 'Gyroscope aiming enabled, screen angle:', angle );
 
 }
 
@@ -594,7 +584,6 @@ async function Touch_RequestWakeLock() {
 		try {
 
 			wakeLock = await navigator.wakeLock.request( 'screen' );
-			console.log( 'Wake Lock acquired' );
 
 			wakeLock.addEventListener( 'release', () => {
 
@@ -654,7 +643,6 @@ export async function Touch_RequestFullscreen() {
 			try {
 
 				await screen.orientation.lock( 'landscape' );
-				console.log( 'Orientation locked to landscape' );
 
 			} catch ( e ) {
 
@@ -726,13 +714,9 @@ export function Touch_Init( container ) {
 
 	if ( initialized ) return;
 
-	console.log( 'Touch_Init called, container:', container );
-
 	Touch_CreateUI( container || document.body );
 
 	initialized = true;
-
-	console.log( 'Touch controls initialized' );
 
 }
 
@@ -745,23 +729,11 @@ Enable touch controls (show UI, add listeners)
 */
 export function Touch_Enable() {
 
-	if ( ! initialized ) {
-
-		console.log( 'Touch_Enable: Failed - not initialized' );
-		return;
-
-	}
-
-	if ( enabled ) {
-
-		return; // Already enabled, no need to log
-
-	}
+	if ( ! initialized ) return;
+	if ( enabled ) return;
 
 	enabled = true;
 	overlay.style.display = 'block';
-
-	console.log( 'Touch_Enable: Touch controls enabled, overlay visible' );
 
 	// Add touch listeners
 	joystickArea.addEventListener( 'touchstart', onTouchStart, { passive: false } );

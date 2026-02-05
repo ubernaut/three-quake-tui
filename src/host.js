@@ -871,9 +871,7 @@ function Host_Map_f() {
 	svs.serverflags = 0; // haven't completed an episode yet
 	const name = Cmd_Argv( 1 );
 
-	console.log( 'Host_Map_f: spawning server for map "' + name + '"' );
 	SV_SpawnServer( name );
-	console.log( 'Host_Map_f: sv.active=' + sv.active );
 
 	if ( ! sv.active )
 		return;
@@ -2007,9 +2005,6 @@ function Host_Spawn_f() {
 
 	}
 
-	const clientIdx = svs.clients.indexOf( host_client );
-	console.log( '[MP] Host_Spawn_f: client', clientIdx, host_client.name );
-
 	// run the entrance script
 	if ( sv.loadgame ) {
 
@@ -2046,9 +2041,6 @@ function Host_Spawn_f() {
 				Sys_Printf( '%s entered the game\n', host_client.name );
 
 			PR_ExecuteProgram( pr_global_struct.PutClientInServer );
-
-			// Log entity state after PutClientInServer
-			console.log( '[MP] After PutClientInServer: entity', clientIdx + 1, 'modelindex=', ent.v.modelindex );
 
 		}
 
@@ -2131,8 +2123,6 @@ function Host_Begin_f() {
 
 	}
 
-	const clientIdx = svs.clients.indexOf( host_client );
-	console.log( '[MP] Host_Begin_f: client', clientIdx, host_client.name, 'spawned=true' );
 	host_client.spawned = true;
 
 }
