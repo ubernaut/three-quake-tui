@@ -103,6 +103,22 @@ const _flymove_planes = [];
 for ( let i = 0; i < MAX_CLIP_PLANES; i ++ )
 	_flymove_planes[ i ] = new Float32Array( 3 );
 
+// Cached buffers for SV_PushRotate (Golden Rule #4)
+const _pushrotate_amove = new Float32Array( 3 );
+const _pushrotate_a = new Float32Array( 3 );
+const _pushrotate_pushorig = new Float32Array( 3 );
+const _pushrotate_entorig = new Float32Array( 3 );
+const _pushrotate_move = new Float32Array( 3 );
+const _pushrotate_org = new Float32Array( 3 );
+const _pushrotate_org2 = new Float32Array( 3 );
+const _pushrotate_forward = new Float32Array( 3 );
+const _pushrotate_right = new Float32Array( 3 );
+const _pushrotate_up = new Float32Array( 3 );
+const _pushrotate_moved_edict = new Array( MAX_EDICTS );
+const _pushrotate_moved_from = [];
+for ( let i = 0; i < MAX_EDICTS; i ++ )
+	_pushrotate_moved_from[ i ] = new Float32Array( 3 );
+
 //
 // cvars
 //
@@ -568,20 +584,22 @@ QUAKE2 feature
 */
 export function SV_PushRotate( pusher, movetime ) {
 
-	const amove = new Float32Array( 3 );
-	const a = new Float32Array( 3 );
-	const pushorig = new Float32Array( 3 );
-	const entorig = new Float32Array( 3 );
-	const move = new Float32Array( 3 );
-	const org = new Float32Array( 3 );
-	const org2 = new Float32Array( 3 );
-	const forward = new Float32Array( 3 );
-	const right = new Float32Array( 3 );
-	const up = new Float32Array( 3 );
-	const moved_edict = new Array( MAX_EDICTS );
-	const moved_from = [];
+	// Use cached buffers instead of allocating per-call
+	const amove = _pushrotate_amove;
+	const a = _pushrotate_a;
+	const pushorig = _pushrotate_pushorig;
+	const entorig = _pushrotate_entorig;
+	const move = _pushrotate_move;
+	const org = _pushrotate_org;
+	const org2 = _pushrotate_org2;
+	const forward = _pushrotate_forward;
+	const right = _pushrotate_right;
+	const up = _pushrotate_up;
+	const moved_edict = _pushrotate_moved_edict;
+	const moved_from = _pushrotate_moved_from;
+	// Clear moved_edict array for reuse
 	for ( let i = 0; i < MAX_EDICTS; i ++ )
-		moved_from[ i ] = new Float32Array( 3 );
+		moved_edict[ i ] = null;
 
 	// If no angular velocity, just advance time
 	if ( pusher.v.avelocity[ 0 ] === 0 && pusher.v.avelocity[ 1 ] === 0 && pusher.v.avelocity[ 2 ] === 0 ) {
