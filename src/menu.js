@@ -866,6 +866,14 @@ const MULTIPLAYER_ITEMS = 3;
 
 function M_Menu_MultiPlayer_f() {
 
+	// Check if browser supports WebTransport
+	if ( typeof WebTransport === 'undefined' ) {
+
+		alert( 'Multiplayer requires a browser with WebTransport support (Chrome 97+, Edge 97+, Firefox 114+, or Opera 83+).' );
+		return;
+
+	}
+
 	setKeyDest( key_menu );
 	m_state = m_multiplayer;
 	m_entersound = true;
