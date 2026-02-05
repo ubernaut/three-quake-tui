@@ -93,6 +93,16 @@ const STOP_EPSILON = 0.1;
 const MAX_CLIP_PLANES = 5;
 const STEPSIZE = 18;
 
+// Cached buffers for SV_FlyMove to avoid per-call allocations (Golden Rule #4)
+const _flymove_original_velocity = new Float32Array( 3 );
+const _flymove_primal_velocity = new Float32Array( 3 );
+const _flymove_new_velocity = new Float32Array( 3 );
+const _flymove_dir = new Float32Array( 3 );
+const _flymove_end = new Float32Array( 3 );
+const _flymove_planes = [];
+for ( let i = 0; i < MAX_CLIP_PLANES; i ++ )
+	_flymove_planes[ i ] = new Float32Array( 3 );
+
 //
 // cvars
 //
@@ -343,14 +353,13 @@ export function SV_FlyMove( ent, time, steptrace ) {
 	const numbumps = 4;
 
 	let blocked = 0;
-	const original_velocity = new Float32Array( 3 );
-	const primal_velocity = new Float32Array( 3 );
-	const new_velocity = new Float32Array( 3 );
-	const dir = new Float32Array( 3 );
-	const end = new Float32Array( 3 );
-	const planes = [];
-	for ( let i = 0; i < MAX_CLIP_PLANES; i ++ )
-		planes[ i ] = new Float32Array( 3 );
+	// Use cached buffers instead of allocating per-call
+	const original_velocity = _flymove_original_velocity;
+	const primal_velocity = _flymove_primal_velocity;
+	const new_velocity = _flymove_new_velocity;
+	const dir = _flymove_dir;
+	const end = _flymove_end;
+	const planes = _flymove_planes;
 
 	VectorCopy( ent.v.velocity, original_velocity );
 	VectorCopy( ent.v.velocity, primal_velocity );
