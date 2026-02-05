@@ -739,7 +739,7 @@ export function R_DrawSequentialPoly( s ) {
 			if ( geometry ) {
 
 				const t = R_TextureAnimation( s.texinfo.texture );
-				const material = _getWaterMaterial( t, 0.7 );
+				const material = _getWaterMaterial( t, r_wateralpha.value );
 				_getWaterMesh( s, geometry, material, renderGroup );
 
 			}
@@ -796,7 +796,7 @@ export function R_RenderBrushPoly( fa ) {
 			const geometry = EmitWaterPolysQuake( fa, realtime );
 			if ( geometry ) {
 
-				const material = _getWaterMaterial( t, 0.7 );
+				const material = _getWaterMaterial( t, r_wateralpha.value );
 				_getWaterMesh( fa, geometry, material, renderGroup );
 
 			}
