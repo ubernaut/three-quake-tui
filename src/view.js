@@ -5,7 +5,7 @@ import { PITCH, YAW, ROLL,
 	STAT_HEALTH, STAT_WEAPON, STAT_WEAPONFRAME } from './quakedef.js';
 import { MSG_ReadByte, MSG_ReadCoord } from './common.js';
 import { Cmd_AddCommand, Cmd_Argv } from './cmd.js';
-import { cvar_t, Cvar_RegisterVariable, Cvar_Set } from './cvar.js';
+import { cvar_t, Cvar_RegisterVariable, Cvar_Set, Cvar_VariableValue } from './cvar.js';
 import { VectorCopy, VectorAdd, VectorSubtract, VectorNormalize,
 	DotProduct, AngleVectors, anglemod, M_PI } from './mathlib.js';
 import { host_frametime, noclip_anglehack, sv } from './host.js';
@@ -22,6 +22,9 @@ import { con_forcedup } from './console.js';
 import { VID_UpdateGamma } from './vid.js';
 import { scr_viewsize } from './gl_screen.js';
 import { cl_simorg, cl_simvel, cl_simangles, cl_simonground, cl_nopred, cl_prediction_active } from './cl_pred.js';
+
+// Lazy-loaded Chase_Update (avoids circular dependency: in_web.js → view.js → chase.js → client.js)
+let _Chase_Update = null;
 
 /*
 
@@ -899,8 +902,8 @@ export function V_CalcRefdef() {
 	} else
 		_oldz = playerorg[ 2 ];
 
-	// if ( chase_active.value )
-	//     Chase_Update();
+	if ( Cvar_VariableValue( 'chase_active' ) !== 0 && _Chase_Update != null )
+		_Chase_Update();
 
 }
 
@@ -988,5 +991,8 @@ export function V_Init() {
 	BuildGammaTable( 1.0 ); // no gamma yet
 	Cvar_RegisterVariable( v_gamma );
 	VID_UpdateGamma( v_gamma.value );
+
+	// Lazy-load Chase_Update to avoid circular dependency
+	import( './chase.js' ).then( ( mod ) => { _Chase_Update = mod.Chase_Update; } );
 
 }

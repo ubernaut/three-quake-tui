@@ -7,7 +7,7 @@ import { MAX_MODELS, MAX_SOUNDS, MAX_EDICTS, MAX_LIGHTSTYLES,
 import { Con_Printf, Con_DPrintf, SZ_Alloc, SZ_Clear,
 	MSG_WriteByte, MSG_WriteString } from './common.js';
 import { NET_Connect, NET_SendMessage, NET_CanSendMessage, NET_Close } from './net_main.js';
-import { cvar_t, Cvar_RegisterVariable } from './cvar.js';
+import { cvar_t, Cvar_RegisterVariable, Cvar_VariableValue } from './cvar.js';
 import { Cmd_AddCommand } from './cmd.js';
 import { Cbuf_InsertText } from './cmd.js';
 import { clc_disconnect, clc_stringcmd } from './protocol.js';
@@ -1112,7 +1112,7 @@ export function CL_RelinkEntities() {
 
 		ent.forcelink = false;
 
-		if ( i === cl.viewentity /* && ! chase_active.value */ )
+		if ( i === cl.viewentity && Cvar_VariableValue( 'chase_active' ) === 0 )
 			continue;
 
 		if ( cl_numvisedicts < MAX_VISEDICTS ) {

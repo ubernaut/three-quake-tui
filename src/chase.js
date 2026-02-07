@@ -12,11 +12,19 @@ export const chase_up = new cvar_t( 'chase_up', '16' );
 export const chase_right = new cvar_t( 'chase_right', '0' );
 export const chase_active = new cvar_t( 'chase_active', '0' );
 
-const chase_pos = new Float32Array( 3 );
-const chase_angles = new Float32Array( 3 );
-
 const chase_dest = new Float32Array( 3 );
-const chase_dest_angles = new Float32Array( 3 );
+
+// Cached vectors for Chase_Update (Golden Rule #4 - no allocations in render loop)
+const _chase_forward = new Float32Array( 3 );
+const _chase_up = new Float32Array( 3 );
+const _chase_right = new Float32Array( 3 );
+const _chase_dest = new Float32Array( 3 );
+const _chase_stop = new Float32Array( 3 );
+
+// Lazy-loaded collision imports (avoids circular dependency through world.js -> server.js -> menu.js -> keys.js)
+let _SV_RecursiveHullCheck = null;
+let _trace_t = null;
+let _chase_trace = null;
 
 export function Chase_Init() {
 
@@ -24,6 +32,15 @@ export function Chase_Init() {
 	Cvar_RegisterVariable( chase_up );
 	Cvar_RegisterVariable( chase_right );
 	Cvar_RegisterVariable( chase_active );
+
+	// Lazy-load collision detection to avoid circular dependency
+	import( './world.js' ).then( ( world ) => {
+
+		_SV_RecursiveHullCheck = world.SV_RecursiveHullCheck;
+		_trace_t = world.trace_t;
+		_chase_trace = new world.trace_t();
+
+	} );
 
 }
 
@@ -36,20 +53,42 @@ export function Chase_Reset() {
 
 function TraceLine( start, end, impact ) {
 
-	// Simplified trace - the original calls SV_RecursiveHullCheck
-	// In the full implementation, this would do BSP collision detection
-	// For now, just copy end to impact
-	VectorCopy( end, impact );
+	// Use BSP collision if available (ported from chase.c)
+	if ( _SV_RecursiveHullCheck != null && _chase_trace != null
+		&& cl.worldmodel != null && cl.worldmodel.hulls != null ) {
+
+		// Reset trace
+		_chase_trace.allsolid = false;
+		_chase_trace.startsolid = false;
+		_chase_trace.inopen = false;
+		_chase_trace.inwater = false;
+		_chase_trace.fraction = 1.0;
+		_chase_trace.endpos[ 0 ] = end[ 0 ];
+		_chase_trace.endpos[ 1 ] = end[ 1 ];
+		_chase_trace.endpos[ 2 ] = end[ 2 ];
+		_chase_trace.ent = null;
+
+		_SV_RecursiveHullCheck( cl.worldmodel.hulls[ 0 ], 0, 0, 1, start, end, _chase_trace );
+
+		VectorCopy( _chase_trace.endpos, impact );
+
+	} else {
+
+		// Fallback: just copy end to impact
+		VectorCopy( end, impact );
+
+	}
 
 }
 
 export function Chase_Update() {
 
-	const forward = new Float32Array( 3 );
-	const up = new Float32Array( 3 );
-	const right = new Float32Array( 3 );
-	const dest = new Float32Array( 3 );
-	const stop = new Float32Array( 3 );
+	// Use cached vectors (Golden Rule #4)
+	const forward = _chase_forward;
+	const up = _chase_up;
+	const right = _chase_right;
+	const dest = _chase_dest;
+	const stop = _chase_stop;
 
 	// if can't see player, reset
 	AngleVectors( cl.viewangles, forward, right, up );
