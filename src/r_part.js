@@ -10,6 +10,16 @@ import { isXRActive, XR_SCALE } from './webxr.js';
 
 const MAX_PARTICLES = 2048;
 
+// Precomputed sRGB -> linear lookup table (256 entries)
+// Quake palette values are sRGB; Three.js expects vertex colors in linear space.
+const srgbToLinear = new Float32Array( 256 );
+for ( let i = 0; i < 256; i ++ ) {
+
+	const s = i / 255;
+	srgbToLinear[ i ] = s <= 0.04045 ? s / 12.92 : Math.pow( ( s + 0.055 ) / 1.055, 2.4 );
+
+}
+
 const ramp1 = [ 0x6f, 0x6d, 0x6b, 0x69, 0x67, 0x65, 0x63, 0x61 ];
 const ramp2 = [ 0x6f, 0x6e, 0x6d, 0x6c, 0x6b, 0x6a, 0x68, 0x66 ];
 const ramp3 = [ 0x6d, 0x6b, 6, 5, 4, 3 ];
@@ -691,11 +701,11 @@ export function R_DrawParticles() {
 		positionArray[ count * 3 + 1 ] = p.org[ 1 ];
 		positionArray[ count * 3 + 2 ] = p.org[ 2 ];
 
-		// Convert palette color to RGB
+		// Convert palette color to linear RGB (palette is sRGB, Three.js expects linear)
 		const rgba = d_8to24table[ p.color & 0xff ];
-		colorArray[ count * 3 ] = ( rgba & 0xff ) / 255;
-		colorArray[ count * 3 + 1 ] = ( ( rgba >> 8 ) & 0xff ) / 255;
-		colorArray[ count * 3 + 2 ] = ( ( rgba >> 16 ) & 0xff ) / 255;
+		colorArray[ count * 3 ] = srgbToLinear[ rgba & 0xff ];
+		colorArray[ count * 3 + 1 ] = srgbToLinear[ ( rgba >> 8 ) & 0xff ];
+		colorArray[ count * 3 + 2 ] = srgbToLinear[ ( rgba >> 16 ) & 0xff ];
 
 		count ++;
 
