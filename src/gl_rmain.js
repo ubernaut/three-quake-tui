@@ -14,8 +14,8 @@ import {
 } from './mathlib.js';
 import { R_DrawWorld as R_DrawWorld_impl, R_MarkLeaves as R_MarkLeaves_impl, GL_BuildLightmaps as GL_BuildLightmaps_rsurf, R_DrawBrushModel as R_DrawBrushModel_rsurf, R_DrawWaterSurfaces as R_DrawWaterSurfaces_rsurf, R_CleanupWaterMeshes as R_CleanupWaterMeshes_rsurf } from './gl_rsurf.js';
 import { Mod_PointInLeaf } from './gl_model.js';
-import { R_AnimateLight as R_AnimateLight_impl, R_PushDlights as R_PushDlights_impl, R_RenderDlights as R_RenderDlights_impl, R_LightPoint } from './gl_rlight.js';
-import { R_DrawAliasModel as R_DrawAliasModel_mesh } from './gl_mesh.js';
+import { R_AnimateLight as R_AnimateLight_impl, R_PushDlights as R_PushDlights_impl, R_RenderDlights as R_RenderDlights_impl, R_LightPoint, lightspot } from './gl_rlight.js';
+import { R_DrawAliasModel as R_DrawAliasModel_mesh, GL_DrawAliasShadow } from './gl_mesh.js';
 import { r_avertexnormal_dots } from './anorm_dots.js';
 import { V_SetContentsColor as V_SetContentsColor_view, V_CalcBlend as V_CalcBlend_view, v_blend as v_blend_view } from './view.js';
 import {
@@ -706,6 +706,7 @@ let _entityMeshesThisFrame = new Set();
 
 // Pre-allocated vector for dynamic light distance calculation (avoid per-frame allocation)
 const _dlightDist = [ 0, 0, 0 ];
+const _shadevector = new Float32Array( 3 );
 
 // Cached buffers for R_SetupGL (Golden Rule #4)
 const _setupgl_forward = new Float32Array( 3 );
@@ -784,6 +785,21 @@ function R_DrawAliasModel( e ) {
 
 	}
 
+	// Compute shadevector from entity yaw (for shadows, computed before mesh call)
+	// Ported from WinQuake/gl_rmain.c:519-523
+	const an = ( e.angles ? e.angles[ 1 ] : 0 ) / 180 * M_PI;
+	_shadevector[ 0 ] = Math.cos( - an );
+	_shadevector[ 1 ] = Math.sin( - an );
+	_shadevector[ 2 ] = 1;
+	const svLen = Math.sqrt( _shadevector[ 0 ] * _shadevector[ 0 ] + _shadevector[ 1 ] * _shadevector[ 1 ] + _shadevector[ 2 ] * _shadevector[ 2 ] );
+	if ( svLen > 0 ) {
+
+		_shadevector[ 0 ] /= svLen;
+		_shadevector[ 1 ] /= svLen;
+		_shadevector[ 2 ] /= svLen;
+
+	}
+
 	const mesh = R_DrawAliasModel_mesh( e, paliashdr, shadedots, shadelight );
 	if ( mesh && scene ) {
 
@@ -795,6 +811,25 @@ function R_DrawAliasModel( e ) {
 		}
 
 		_entityMeshesThisFrame.add( mesh );
+
+	}
+
+	// Draw shadow (Ported from WinQuake/gl_rmain.c:579-591)
+	if ( r_shadows.value !== 0 && e !== cl.viewent && mesh != null && scene != null ) {
+
+		const shadowMesh = GL_DrawAliasShadow( e, paliashdr, e._aliasPosenum || 0, lightspot, _shadevector );
+		if ( shadowMesh != null ) {
+
+			if ( ! _entityMeshesInScene.has( shadowMesh ) ) {
+
+				scene.add( shadowMesh );
+				_entityMeshesInScene.add( shadowMesh );
+
+			}
+
+			_entityMeshesThisFrame.add( shadowMesh );
+
+		}
 
 	}
 

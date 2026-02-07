@@ -779,3 +779,112 @@ export function R_DrawAliasModel( entity, paliashdr, shadedots, shadelight ) {
 	return mesh;
 
 }
+
+/*
+=============
+GL_DrawAliasShadow
+
+Projects alias model vertices onto the ground plane to create a shadow.
+Ported from WinQuake/gl_rmain.c:347-405
+=============
+*/
+
+// Shared shadow material (Golden Rule #4 — one for all entities)
+const _shadowMaterial = new THREE.MeshBasicMaterial( {
+	color: 0x000000,
+	transparent: true,
+	opacity: 0.5,
+	depthWrite: false,
+	side: THREE.DoubleSide
+} );
+
+// Cached matrix objects for shadow transform (Golden Rule #4)
+const _shadowMat = new THREE.Matrix4();
+const _shadowRZ = new THREE.Matrix4();
+const _shadowRY = new THREE.Matrix4();
+const _shadowRX = new THREE.Matrix4();
+
+export function GL_DrawAliasShadow( entity, paliashdr, posenum, lightspot, shadevector ) {
+
+	if ( paliashdr == null || paliashdr.posedata == null ) return null;
+
+	const template = GL_DrawAliasFrame( paliashdr, posenum );
+	if ( template == null ) return null;
+
+	const lheight = entity.origin[ 2 ] - lightspot[ 2 ];
+	const height = - lheight + 1.0;
+
+	// Get or create shadow geometry for this entity
+	let shadowGeo = entity._aliasShadowGeo;
+	let shadowPosArray = entity._aliasShadowPosArray;
+
+	if ( shadowGeo == null || entity._aliasShadowVertCount !== template.vertexCount ) {
+
+		shadowPosArray = new Float32Array( template.vertexCount * 3 );
+		shadowGeo = new THREE.BufferGeometry();
+		shadowGeo.setAttribute( 'position', new THREE.BufferAttribute( shadowPosArray, 3 ) );
+		shadowGeo.setIndex( template.indices );
+		entity._aliasShadowGeo = shadowGeo;
+		entity._aliasShadowPosArray = shadowPosArray;
+		entity._aliasShadowVertCount = template.vertexCount;
+
+	}
+
+	// Project vertices onto ground plane (same as C code)
+	const srcPos = template.posAttr.array;
+	for ( let i = 0; i < template.vertexCount; i ++ ) {
+
+		const px = srcPos[ i * 3 ];
+		const py = srcPos[ i * 3 + 1 ];
+		const pz = srcPos[ i * 3 + 2 ];
+
+		shadowPosArray[ i * 3 ] = px - shadevector[ 0 ] * ( pz + lheight );
+		shadowPosArray[ i * 3 + 1 ] = py - shadevector[ 1 ] * ( pz + lheight );
+		shadowPosArray[ i * 3 + 2 ] = height;
+
+	}
+
+	shadowGeo.attributes.position.needsUpdate = true;
+
+	// Get or create shadow mesh
+	let shadowMesh = entity._aliasShadowMesh;
+	if ( shadowMesh == null ) {
+
+		shadowMesh = new THREE.Mesh( shadowGeo, _shadowMaterial );
+		entity._aliasShadowMesh = shadowMesh;
+
+	} else {
+
+		if ( shadowMesh.geometry !== shadowGeo ) shadowMesh.geometry = shadowGeo;
+
+	}
+
+	// Apply same transform as entity (R_RotateForEntity equivalent)
+	if ( entity.origin != null ) {
+
+		shadowMesh.position.set(
+			entity.origin[ 0 ],
+			entity.origin[ 1 ],
+			entity.origin[ 2 ]
+		);
+
+	}
+
+	if ( entity.angles != null ) {
+
+		const yaw = entity.angles[ 1 ] * _DEG2RAD;
+		const pitch = - entity.angles[ 0 ] * _DEG2RAD;
+		const roll = entity.angles[ 2 ] * _DEG2RAD;
+
+		_shadowMat.identity();
+		_shadowRZ.makeRotationZ( yaw );
+		_shadowRY.makeRotationY( pitch );
+		_shadowRX.makeRotationX( roll );
+		_shadowMat.multiply( _shadowRZ ).multiply( _shadowRY ).multiply( _shadowRX );
+		shadowMesh.setRotationFromMatrix( _shadowMat );
+
+	}
+
+	return shadowMesh;
+
+}
