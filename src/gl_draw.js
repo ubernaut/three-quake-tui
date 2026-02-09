@@ -111,8 +111,8 @@ function _calculateUIScale() {
 
 	}
 
-	_virtualWidth = Math.floor( physicalWidth / _uiScale );
-	_virtualHeight = Math.floor( physicalHeight / _uiScale );
+	_virtualWidth = Math.ceil( physicalWidth / _uiScale );
+	_virtualHeight = Math.ceil( physicalHeight / _uiScale );
 
 	return { width: _virtualWidth, height: _virtualHeight };
 
