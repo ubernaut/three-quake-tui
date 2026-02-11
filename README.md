@@ -1,45 +1,25 @@
 # three-quake
 
-A WIP port of Quake (1996) to Three.js.
+A port of Quake to Three.js.
 
-## Play
+### Play
 
 https://mrdoob.github.io/three-quake/
 
-## Controls
+### Dev Log
 
-- **WASD** - Move
-- **Mouse** - Look
-- **Space** - Jump
-- **1-8** - Select weapon
-- **E** - Interact
-- **Tab** - Debug overlay
-- **~** - Console
-- **Escape** - Menu
-- **F5** - Quick save
-- **F9** - Quick load
+https://x.com/mrdoob/status/2015076521531355583
 
-## Features
+### Assets
 
-- BSP level rendering with lightmaps
-- MDL model animation
-- Sprite rendering
-- Demo playback (.dem files)
-- All 8 weapons
-- 14 monster types with AI
-- Collision detection
-- Spatial audio
-- Save/load system
+Shareware `pak0.pak` included (Episode 1).  
+For the full game, replace with your own `pak0.pak` from a registered copy of Quake.
 
-## Assets
-
-Shareware `pak0.pak` included (Episode 1). For the full game, replace with your own `pak0.pak` from a registered copy of Quake.
-
-## License
+### License
 
 Code: GPL v2
 
-## Credits
+### Credits
 
-- Original game by id Software (1996)
-- Three.js port by [@mrdoob](https://github.com/mrdoob) with [@claude](https://claude.ai)
+- Original game by id Software ([source](https://github.com/id-Software/Quake))
+- Three.js port by [@mrdoob](https://github.com/mrdoob) with [@claude](https://github.com/claude)
