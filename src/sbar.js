@@ -706,18 +706,15 @@ function Sbar_DrawFace() {
 
 	if ( health >= 100 )
 		f = 4;
-	else if ( health >= 80 )
-		f = 3;
-	else if ( health >= 60 )
-		f = 2;
-	else if ( health >= 40 )
-		f = 1;
 	else
-		f = 0;
+		f = Math.floor( health / 20 );
+
+	if ( f < 0 ) f = 0;
+	if ( f > 4 ) f = 4;
 
 	// pain animation
 	aession = 0;
-	if ( _cl.faceanimtime > realtime ) {
+	if ( _cl.time <= _cl.faceanimtime ) {
 
 		aession = 1;
 
