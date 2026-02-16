@@ -107,7 +107,7 @@ let scoreboardlines = 0;
 ==============================================================================
 */
 
-let _cl = { stats: new Int32Array( 32 ), items: 0, gametype: 0, scores: [], time: 0, faceanimtime: 0, maxclients: 16, levelname: '' };
+let _cl = { stats: new Int32Array( 32 ), items: 0, gametype: 0, scores: [], time: 0, faceanimtime: 0, maxclients: 16, levelname: '', item_gettime: new Float32Array( 32 ), viewentity: 0 };
 let _realVid = { width: 640, height: 480, numpages: 1 };
 const _vid = {
 	get width() { return Draw_GetVirtualWidth(); },
@@ -420,64 +420,70 @@ Sbar_DrawInventory
 */
 function Sbar_DrawInventory() {
 
-	if ( _cl.gametype === GAME_DEATHMATCH ) {
-
-		if ( ! sb_showscores )
-			return;
-
-	}
-
-	// weapons
 	Sbar_DrawPic( 0, - 24, sb_ibar );
 
+	// weapons
 	for ( let i = 0; i < 7; i ++ ) {
 
 		if ( _cl.items & ( IT_SHOTGUN << i ) ) {
 
-			let flashon = 0;
-			// time-based flash
-			if ( flashon > 1 ) flashon = 1;
-			Sbar_DrawPic( i * 24, - 16, sb_weapons[ flashon ][ i ] );
+			const time = _cl.item_gettime[ i ];
+			let flashon = Math.floor( ( _cl.time - time ) * 10 );
+			if ( flashon >= 10 ) {
 
-			// active weapon highlight
-			if ( _cl.stats[ STAT_ACTIVEWEAPON ] === ( IT_SHOTGUN << i ) ) {
+				if ( _cl.stats[ STAT_ACTIVEWEAPON ] === ( IT_SHOTGUN << i ) )
+					flashon = 1;
+				else
+					flashon = 0;
 
-				Sbar_DrawPic( i * 24, - 16, sb_weapons[ 0 ][ i ] );
+			} else {
+
+				flashon = ( flashon % 5 ) + 2;
 
 			}
+
+			Sbar_DrawPic( i * 24, - 16, sb_weapons[ flashon ][ i ] );
+
+			if ( flashon > 1 )
+				sb_updates = 0; // force update to remove flash
 
 		}
 
 	}
 
 	// ammo counts
-	Sbar_DrawCharacter( ( 6 * 8 ) - 2, - 24, 18 + 0 ); // shells icon position
-
-	const ammoValues = [
-		_cl.stats[ STAT_SHELLS ],
-		_cl.stats[ STAT_NAILS ],
-		_cl.stats[ STAT_ROCKETS ],
-		_cl.stats[ STAT_CELLS ],
-	];
-
 	for ( let i = 0; i < 4; i ++ ) {
 
-		const val = String( ammoValues[ i ] );
-		const xpos = ( 6 * 8 ) + ( i * 48 );
-		for ( let j = 0; j < val.length && j < 3; j ++ ) {
-
-			Sbar_DrawCharacter( xpos + ( 3 - val.length + j ) * 8, - 24, val.charCodeAt( j ) );
-
-		}
+		const num = String( _cl.stats[ STAT_SHELLS + i ] ).padStart( 3, ' ' );
+		if ( num[ 0 ] !== ' ' )
+			Sbar_DrawCharacter( ( 6 * i + 1 ) * 8 - 2, - 24, 18 + num.charCodeAt( 0 ) - 48 );
+		if ( num[ 1 ] !== ' ' )
+			Sbar_DrawCharacter( ( 6 * i + 2 ) * 8 - 2, - 24, 18 + num.charCodeAt( 1 ) - 48 );
+		if ( num[ 2 ] !== ' ' )
+			Sbar_DrawCharacter( ( 6 * i + 3 ) * 8 - 2, - 24, 18 + num.charCodeAt( 2 ) - 48 );
 
 	}
 
 	// items
+	let flashon = 0;
 	for ( let i = 0; i < 6; i ++ ) {
 
 		if ( _cl.items & ( 1 << ( 17 + i ) ) ) {
 
-			Sbar_DrawPic( 192 + i * 16, - 16, sb_items[ i ] );
+			const time = _cl.item_gettime[ 17 + i ];
+			if ( time !== 0 && time > _cl.time - 2 && flashon ) {
+
+				// flash frame
+				sb_updates = 0;
+
+			} else {
+
+				Sbar_DrawPic( 192 + i * 16, - 16, sb_items[ i ] );
+
+			}
+
+			if ( time !== 0 && time > _cl.time - 2 )
+				sb_updates = 0;
 
 		}
 
@@ -488,7 +494,20 @@ function Sbar_DrawInventory() {
 
 		if ( _cl.items & ( 1 << ( 28 + i ) ) ) {
 
-			Sbar_DrawPic( 320 - 32 + i * 8, - 16, sb_sigil[ i ] );
+			const time = _cl.item_gettime[ 28 + i ];
+			if ( time !== 0 && time > _cl.time - 2 && flashon ) {
+
+				// flash frame
+				sb_updates = 0;
+
+			} else {
+
+				Sbar_DrawPic( 320 - 32 + i * 8, - 16, sb_sigil[ i ] );
+
+			}
+
+			if ( time !== 0 && time > _cl.time - 2 )
+				sb_updates = 0;
 
 		}
 
@@ -503,20 +522,57 @@ Sbar_DrawFrags
 */
 function Sbar_DrawFrags() {
 
-	if ( ! _cl.scores ) return;
+	if ( _cl.scores == null ) return;
 
-	const scoreCount = Math.min( _cl.scores.length, MAX_SCOREBOARD );
-	const x = 23;
+	Sbar_SortFrags();
 
-	for ( let i = 0; i < scoreCount; i ++ ) {
+	// draw the text
+	const l = scoreboardlines <= 4 ? scoreboardlines : 4;
 
-		if ( ! _cl.scores[ i ] ) continue;
+	let x = 23;
+	let xofs;
+	if ( _cl.gametype === GAME_DEATHMATCH )
+		xofs = 0;
+	else
+		xofs = ( _vid.width - 320 ) >> 1;
+	const y = _vid.height - SBAR_HEIGHT - 23;
 
-		const k = _cl.scores[ i ].frags;
-		const str = String( k ).padStart( 3, ' ' );
-		Sbar_DrawCharacter( ( x + i * 32 ) + 0, - 24, str.charCodeAt( 0 ) );
-		Sbar_DrawCharacter( ( x + i * 32 ) + 8, - 24, str.charCodeAt( 1 ) );
-		Sbar_DrawCharacter( ( x + i * 32 ) + 16, - 24, str.charCodeAt( 2 ) );
+	for ( let i = 0; i < l; i ++ ) {
+
+		const k = fragsort[ i ];
+		const s = _cl.scores[ k ];
+		if ( s == null || s.name == null || s.name.length === 0 )
+			continue;
+
+		// draw background
+		let top = s.colors & 0xf0;
+		let bottom = ( s.colors & 15 ) << 4;
+		top = Sbar_ColorForMap( top );
+		bottom = Sbar_ColorForMap( bottom );
+
+		if ( _Draw_Fill != null ) {
+
+			_Draw_Fill( xofs + x * 8 + 10, y, 28, 4, top );
+			_Draw_Fill( xofs + x * 8 + 10, y + 4, 28, 3, bottom );
+
+		}
+
+		// draw number
+		const f = s.frags;
+		const num = String( f ).padStart( 3, ' ' );
+
+		Sbar_DrawCharacter( ( x + 1 ) * 8, - 24, num.charCodeAt( 0 ) );
+		Sbar_DrawCharacter( ( x + 2 ) * 8, - 24, num.charCodeAt( 1 ) );
+		Sbar_DrawCharacter( ( x + 3 ) * 8, - 24, num.charCodeAt( 2 ) );
+
+		if ( k === _cl.viewentity - 1 ) {
+
+			Sbar_DrawCharacter( x * 8 + 2, - 24, 16 );
+			Sbar_DrawCharacter( ( x + 4 ) * 8 - 4, - 24, 17 );
+
+		}
+
+		x += 4;
 
 	}
 
@@ -662,17 +718,10 @@ Returns the health face to display
 */
 function Sbar_DrawFace() {
 
-	// PGM 01/19/97 - team color on face
-	if ( _cl.gametype === GAME_DEATHMATCH ) {
-
-		// Draw frag count instead of face
-		Sbar_DrawNum( 136, 0, _cl.stats[ STAT_FRAGS ], 3, _cl.stats[ STAT_HEALTH ] <= 25 ? 1 : 0 );
-		return;
-
-	}
+	// PGM 01/19/97 - team color drawing (rogue only) is not ported
 
 	let f;
-	let aession;
+	let anim;
 
 	if ( ( _cl.items & ( IT_INVISIBILITY | IT_INVULNERABILITY ) ) === ( IT_INVISIBILITY | IT_INVULNERABILITY ) ) {
 
@@ -713,14 +762,15 @@ function Sbar_DrawFace() {
 	if ( f > 4 ) f = 4;
 
 	// pain animation
-	aession = 0;
+	anim = 0;
 	if ( _cl.time <= _cl.faceanimtime ) {
 
-		aession = 1;
+		anim = 1;
+		sb_updates = 0; // make sure the anim gets drawn over
 
 	}
 
-	Sbar_DrawPic( 112, 0, sb_faces[ f ][ aession ] );
+	Sbar_DrawPic( 112, 0, sb_faces[ f ][ anim ] );
 
 }
 
@@ -745,25 +795,41 @@ export function Sbar_Draw() {
 	// Force redraw every frame — canvas overlay is cleared each frame
 	sb_updates = 0;
 
-	// main sbar background
-	if ( sb_lines > 0 ) {
-
-		Sbar_DrawPic( 0, 0, sb_sbar );
-
-	}
-
 	if ( sb_lines > 24 ) {
 
 		Sbar_DrawInventory();
-		if ( _cl.gametype === GAME_DEATHMATCH )
+		if ( _cl.maxclients !== 1 )
 			Sbar_DrawFrags();
 
 	}
 
-	if ( sb_lines > 0 ) {
+	if ( sb_showscores || _cl.stats[ STAT_HEALTH ] <= 0 ) {
+
+		Sbar_DrawPic( 0, 0, sb_scorebar );
+		Sbar_DrawScoreboard();
+		sb_updates = 0;
+
+	} else if ( sb_lines > 0 ) {
+
+		Sbar_DrawPic( 0, 0, sb_sbar );
 
 		// armor
-		Sbar_DrawNum( 24, 0, _cl.stats[ STAT_ARMOR ], 3, _cl.stats[ STAT_ARMOR ] <= 25 ? 1 : 0 );
+		if ( ( _cl.items & IT_INVULNERABILITY ) !== 0 ) {
+
+			Sbar_DrawNum( 24, 0, 666, 3, 1 );
+			// draw_disc would go here (invulnerability icon)
+
+		} else {
+
+			Sbar_DrawNum( 24, 0, _cl.stats[ STAT_ARMOR ], 3, _cl.stats[ STAT_ARMOR ] <= 25 ? 1 : 0 );
+			if ( ( _cl.items & IT_ARMOR3 ) !== 0 )
+				Sbar_DrawPic( 0, 0, sb_armor[ 2 ] );
+			else if ( ( _cl.items & IT_ARMOR2 ) !== 0 )
+				Sbar_DrawPic( 0, 0, sb_armor[ 1 ] );
+			else if ( ( _cl.items & IT_ARMOR1 ) !== 0 )
+				Sbar_DrawPic( 0, 0, sb_armor[ 0 ] );
+
+		}
 
 		// face
 		Sbar_DrawFace();
@@ -771,15 +837,25 @@ export function Sbar_Draw() {
 		// health
 		Sbar_DrawNum( 136, 0, _cl.stats[ STAT_HEALTH ], 3, _cl.stats[ STAT_HEALTH ] <= 25 ? 1 : 0 );
 
-		// ammo
-		Sbar_DrawAmmo();
+		// ammo icon
+		if ( ( _cl.items & IT_SHELLS ) !== 0 )
+			Sbar_DrawPic( 224, 0, sb_ammo[ 0 ] );
+		else if ( ( _cl.items & IT_NAILS ) !== 0 )
+			Sbar_DrawPic( 224, 0, sb_ammo[ 1 ] );
+		else if ( ( _cl.items & IT_ROCKETS ) !== 0 )
+			Sbar_DrawPic( 224, 0, sb_ammo[ 2 ] );
+		else if ( ( _cl.items & IT_CELLS ) !== 0 )
+			Sbar_DrawPic( 224, 0, sb_ammo[ 3 ] );
+
+		// ammo count
+		Sbar_DrawNum( 248, 0, _cl.stats[ STAT_AMMO ], 3, _cl.stats[ STAT_AMMO ] <= 10 ? 1 : 0 );
 
 	}
 
-	if ( sb_showscores || _cl.stats[ STAT_HEALTH ] <= 0 ) {
+	if ( _vid.width > 320 ) {
 
-		// Show the scoreboard
-		Sbar_DrawScoreboard();
+		if ( _cl.gametype === GAME_DEATHMATCH )
+			Sbar_MiniDeathmatchOverlay();
 
 	}
 
@@ -822,28 +898,57 @@ Sbar_DeathmatchOverlay
 */
 function Sbar_DeathmatchOverlay() {
 
-	if ( ! _Draw_Character ) return;
+	if ( _Draw_Character == null || _Draw_Fill == null ) return;
 
-	const l = Math.min( _cl.scores ? _cl.scores.length : 0, MAX_SCOREBOARD );
+	const pic = _Draw_CachePic != null ? _Draw_CachePic( 'gfx/ranking.lmp' ) : null;
+	if ( pic != null ) {
 
+		// M_DrawPic centers on 320x200
+		_Draw_Pic( ( ( 320 - pic.width ) / 2 ) + ( ( _vid.width - 320 ) >> 1 ),
+			8 + ( ( _vid.height - 200 ) >> 1 ), pic );
+
+	}
+
+	// scores
+	Sbar_SortFrags();
+
+	// draw the text
+	const l = scoreboardlines;
+
+	const x = 80 + ( ( _vid.width - 320 ) >> 1 );
+	let y = 40;
 	for ( let i = 0; i < l; i ++ ) {
 
-		if ( ! _cl.scores[ i ] ) continue;
+		const k = fragsort[ i ];
+		const s = _cl.scores[ k ];
+		if ( s == null || s.name == null || s.name.length === 0 )
+			continue;
 
-		const score = _cl.scores[ i ];
-		const y = 56 + i * 10;
-		const k = score.frags;
+		// draw background
+		let top = s.colors & 0xf0;
+		let bottom = ( s.colors & 15 ) << 4;
+		top = Sbar_ColorForMap( top );
+		bottom = Sbar_ColorForMap( bottom );
 
-		const str = String( k ).padStart( 6, ' ' );
-		for ( let j = 0; j < str.length; j ++ )
-			_Draw_Character( ( j + 1 ) * 8, y, str.charCodeAt( j ) );
+		_Draw_Fill( x, y, 40, 4, top );
+		_Draw_Fill( x, y + 4, 40, 4, bottom );
 
-		if ( score.name ) {
+		// draw number
+		const f = s.frags;
+		const num = String( f ).padStart( 3, ' ' );
 
-			for ( let j = 0; j < score.name.length; j ++ )
-				_Draw_Character( ( j + 8 ) * 8, y, score.name.charCodeAt( j ) );
+		_Draw_Character( x + 8, y, num.charCodeAt( 0 ) );
+		_Draw_Character( x + 16, y, num.charCodeAt( 1 ) );
+		_Draw_Character( x + 24, y, num.charCodeAt( 2 ) );
 
-		}
+		if ( k === _cl.viewentity - 1 )
+			_Draw_Character( x - 8, y, 12 );
+
+		// draw name
+		for ( let j = 0; j < s.name.length; j ++ )
+			_Draw_Character( x + 64 + j * 8, y, s.name.charCodeAt( j ) );
+
+		y += 10;
 
 	}
 
@@ -856,11 +961,79 @@ Sbar_MiniDeathmatchOverlay
 */
 export function Sbar_MiniDeathmatchOverlay() {
 
-	if ( _vid.width < 512 || ! sb_showscores )
+	if ( _vid.width < 512 || sb_lines === 0 )
 		return;
 
-	// Mini overlay - just a few lines of score info
-	// Simplified for browser port
+	if ( _Draw_Character == null || _Draw_Fill == null ) return;
+
+	// scores
+	Sbar_SortFrags();
+
+	// draw the text
+	const l = scoreboardlines;
+	let y = _vid.height - sb_lines;
+	const numlines = Math.floor( sb_lines / 8 );
+	if ( numlines < 3 )
+		return;
+
+	// find us
+	let i;
+	for ( i = 0; i < scoreboardlines; i ++ ) {
+
+		if ( fragsort[ i ] === _cl.viewentity - 1 )
+			break;
+
+	}
+
+	if ( i === scoreboardlines ) // we're not there
+		i = 0;
+	else // figure out start
+		i = i - Math.floor( numlines / 2 );
+
+	if ( i > scoreboardlines - numlines )
+		i = scoreboardlines - numlines;
+	if ( i < 0 )
+		i = 0;
+
+	const x = 324;
+	for ( ; i < scoreboardlines && y < _vid.height - 8; i ++ ) {
+
+		const k = fragsort[ i ];
+		const s = _cl.scores[ k ];
+		if ( s == null || s.name == null || s.name.length === 0 )
+			continue;
+
+		// draw background
+		let top = s.colors & 0xf0;
+		let bottom = ( s.colors & 15 ) << 4;
+		top = Sbar_ColorForMap( top );
+		bottom = Sbar_ColorForMap( bottom );
+
+		_Draw_Fill( x, y + 1, 40, 3, top );
+		_Draw_Fill( x, y + 4, 40, 4, bottom );
+
+		// draw number
+		const f = s.frags;
+		const num = String( f ).padStart( 3, ' ' );
+
+		_Draw_Character( x + 8, y, num.charCodeAt( 0 ) );
+		_Draw_Character( x + 16, y, num.charCodeAt( 1 ) );
+		_Draw_Character( x + 24, y, num.charCodeAt( 2 ) );
+
+		if ( k === _cl.viewentity - 1 ) {
+
+			_Draw_Character( x, y, 16 );
+			_Draw_Character( x + 32, y, 17 );
+
+		}
+
+		// draw name
+		for ( let j = 0; j < s.name.length; j ++ )
+			_Draw_Character( x + 48 + j * 8, y, s.name.charCodeAt( j ) );
+
+		y += 8;
+
+	}
 
 }
 
