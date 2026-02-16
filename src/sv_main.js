@@ -64,7 +64,9 @@ import { Mod_ForName, Mod_LeafPVS } from './gl_model.js';
 import { PR_LoadProgs, PR_AllocEdicts, ED_ClearEdict, ED_LoadFromFile, PR_SetCurrentSkill } from './pr_edict.js';
 import { pr_global_struct, pr_strings, pr_edict_size, progs, pr_crc, EDICT_NUM, PR_SetSV, EDICT_TO_PROG, PROG_TO_EDICT, NEXT_EDICT, PR_GetString } from './progs.js';
 import { SV_ClearWorld, SV_Move, SV_TestEntityPosition, SV_LinkEdict, SV_PointContents } from './world.js';
-import { SV_Physics, SV_SetState, SV_SetCallbacks } from './sv_phys.js';
+import { SV_Physics, SV_SetState, SV_SetCallbacks,
+	sv_maxvelocity, sv_gravity, sv_nostep, sv_friction, sv_edgefriction,
+	sv_stopspeed, sv_maxspeed, sv_accelerate, sv_idealpitchscale } from './sv_phys.js';
 import { PR_ExecuteProgram } from './pr_exec.js';
 import { SV_User_SetCallbacks, SV_SetIdealPitch } from './sv_user.js';
 import { V_CalcRoll } from './view.js';
@@ -86,16 +88,7 @@ const MAX_MAP_LEAFS = 8192;
 let fatbytes = 0;
 const fatpvs = new Uint8Array( MAX_MAP_LEAFS / 8 );
 
-// Physics cvars (extern in C)
-export const sv_maxvelocity = new cvar_t( 'sv_maxvelocity', '2000' );
-export const sv_gravity = new cvar_t( 'sv_gravity', '800' );
-export const sv_nostep = new cvar_t( 'sv_nostep', '0' );
-export const sv_friction = new cvar_t( 'sv_friction', '4' );
-export const sv_edgefriction = new cvar_t( 'sv_edgefriction', '2' );
-export const sv_stopspeed = new cvar_t( 'sv_stopspeed', '100' );
-export const sv_maxspeed = new cvar_t( 'sv_maxspeed', '320' );
-export const sv_accelerate = new cvar_t( 'sv_accelerate', '10' );
-export const sv_idealpitchscale = new cvar_t( 'sv_idealpitchscale', '0.8' );
+// sv_aim is only used in sv_main.js (not a physics cvar shared with sv_phys/sv_user)
 export const sv_aim = new cvar_t( 'sv_aim', '0.93' );
 
 export let current_skill = 0;
@@ -289,8 +282,8 @@ export function SV_SendServerinfo( client ) {
 
 	// send music
 	MSG_WriteByte( client.message, svc_cdtrack );
-	MSG_WriteByte( client.message, 0 ); // sv.edicts->v.sounds
-	MSG_WriteByte( client.message, 0 );
+	MSG_WriteByte( client.message, sv.edicts[ 0 ].v.sounds );
+	MSG_WriteByte( client.message, sv.edicts[ 0 ].v.sounds );
 
 	// set view
 	MSG_WriteByte( client.message, svc_setview );
