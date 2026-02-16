@@ -165,18 +165,19 @@ export function R_RenderDlights( cl, scene ) {
 			const pointLight = _getDlight( i );
 			pointLight.position.set( l.origin[ 0 ], l.origin[ 1 ], l.origin[ 2 ] );
 
-			// In XR mode, scene.scale = 1/XR_SCALE puts positions in meters,
-			// but PointLight.distance is not scaled by parent transform.
-			// Divide intensity and distance by XR_SCALE to match meter-space distances.
+			// intensity = time remaining (fades to 0 as light dies)
+			// distance = radius (shrinks via game's decay system)
+			const timeLeft = l.die - cl.time;
+
 			if ( isXRActive() ) {
 
-				pointLight.intensity = l.radius * 5 / XR_SCALE;
-				pointLight.distance = l.radius * 2 / XR_SCALE;
+				pointLight.intensity = 10000 * timeLeft / XR_SCALE;
+				pointLight.distance = l.radius / XR_SCALE;
 
 			} else {
 
-				pointLight.intensity = l.radius * 5;
-				pointLight.distance = l.radius * 2;
+				pointLight.intensity = 10000 * timeLeft;
+				pointLight.distance = l.radius;
 
 			}
 
