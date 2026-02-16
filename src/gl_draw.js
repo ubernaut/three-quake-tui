@@ -715,27 +715,22 @@ export function Draw_TransPicTranslate( x, y, pic, translation ) {
 ================
 Draw_ConsoleBackground
 
+Always fully opaque, matching DOS/WinQuake (draw.c) rather than
+GLQuake (gl_draw.c) which used semi-transparent alpha blending.
 ================
 */
 export function Draw_ConsoleBackground( lines ) {
 
 	if ( ! overlayCtx ) return;
 
-	const y = ( _vid.height * 3 ) >> 2;
-
 	if ( conback && conback.canvas ) {
 
-		const alpha = lines > y ? 1.0 : ( 1.2 * lines ) / y;
-
-		overlayCtx.globalAlpha = alpha;
 		overlayCtx.drawImage( conback.canvas, 0, lines - _vid.height, _vid.width, _vid.height );
-		overlayCtx.globalAlpha = 1.0;
 
 	} else {
 
-		// Fallback: semi-transparent black background
-		const alpha = lines > y ? 0.8 : ( 0.8 * lines ) / y;
-		overlayCtx.fillStyle = 'rgba(0, 0, 0, ' + alpha + ')';
+		// Fallback: solid black background
+		overlayCtx.fillStyle = 'rgb(0, 0, 0)';
 		overlayCtx.fillRect( 0, 0, _vid.width, lines );
 
 	}
