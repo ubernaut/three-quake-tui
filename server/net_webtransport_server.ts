@@ -96,31 +96,10 @@ const MAX_PENDING_MESSAGES = 100;
 const MAX_PENDING_WRITES_UNRELIABLE = 32;  // Expendable — skip and send fresh data next tick
 const MAX_PENDING_WRITES_RELIABLE = 64;    // Critical — if this backed up, connection is dead
 
-// Helper: yield to the macrotask queue so setInterval (game loop) can run.
-//
-// reader.read() resolves via microtasks, which means multiple reader loops
-// can cascade without ever yielding to the macrotask queue. This starves the
-// game loop's setInterval callback.
-//
-// Strategy: yield AFTER successfully reading a message, not before. When no
-// data is available, reader.read() blocks naturally — no artificial delay.
-// This keeps latency minimal: messages are read immediately, then we yield.
-//
-// IMPORTANT: We ALWAYS use setTimeout(resolve, 0) to yield to the macrotask queue.
-// A cached Promise.resolve() only yields to the microtask queue, which does NOT
-// give setInterval a chance to run. The allocation cost of setTimeout is negligible
-// compared to the risk of event loop starvation causing 100% CPU.
-function _yieldAfterRead(conn: ClientConnection): Promise<void> {
-	const pending = conn.pendingMessages.length;
-	if (pending > 4) {
-		// Heavy backpressure: game loop is falling behind, back off significantly
-		return new Promise(resolve => setTimeout(resolve, 50));
-	}
-	if (pending > 1) {
-		// Light backpressure: game loop has unprocessed messages
-		return new Promise(resolve => setTimeout(resolve, 10));
-	}
-	// No backpressure: yield to macrotask queue so setInterval can fire
+// Yield to the macrotask queue so setInterval (game loop) can run.
+// reader.read() resolves via microtasks which can cascade without yielding.
+// setTimeout(resolve, 0) ensures the game loop's setInterval gets a chance to fire.
+function _yieldAfterRead(): Promise<void> {
 	return new Promise(resolve => setTimeout(resolve, 0));
 }
 
@@ -401,7 +380,7 @@ function _startBackgroundReaders(
 				}
 
 				// Yield to macrotask queue after reading so the game loop can run
-				await _yieldAfterRead(conn);
+				await _yieldAfterRead();
 			}
 		} catch (error) {
 			if (conn.connected) {
@@ -433,7 +412,7 @@ function _startBackgroundReaders(
 				}
 
 				// Yield to macrotask queue after reading so the game loop can run
-				await _yieldAfterRead(conn);
+				await _yieldAfterRead();
 			}
 		} catch (error) {
 			if (conn.connected) {
@@ -487,82 +466,46 @@ function _getReaderBuffer(reader: ReadableStreamDefaultReader<Uint8Array>): { da
 
 /**
  * Read exactly n bytes from a reader, with buffering for leftover bytes.
- * Optimized to avoid allocations in the common case where reader.read()
- * returns exactly the right number of bytes.
+ * Always copies data into a new Uint8Array to avoid holding references to
+ * QUIC stream internal buffers (which can cause buffer starvation and
+ * event loop freezes in Deno's QUIC stack).
  */
 async function _readExact(
 	reader: ReadableStreamDefaultReader<Uint8Array>,
 	n: number
 ): Promise<Uint8Array | null> {
 	const buf = _getReaderBuffer(reader);
-
-	// Fast path: no leftover buffer, read directly from stream
-	if (buf.data === null) {
-		const { value, done } = await reader.read();
-		if (done) return null;
-		if (value.length === 0) return null;
-
-		if (value.length === n) {
-			// Exact match — zero copy, no allocation
-			return value;
-		}
-
-		if (value.length > n) {
-			// More data than needed — return slice, save leftover
-			buf.data = value;
-			buf.offset = n;
-			return value.subarray(0, n);
-		}
-
-		// Less data than needed — fall through to accumulation path
-		const result = new Uint8Array(n);
-		result.set(value, 0);
-		let offset = value.length;
-
-		while (offset < n) {
-			const chunk = await reader.read();
-			if (chunk.done) return null;
-			if (chunk.value.length === 0) return null;
-
-			const bytesToCopy = Math.min(chunk.value.length, n - offset);
-			result.set(chunk.value.subarray(0, bytesToCopy), offset);
-			offset += bytesToCopy;
-
-			if (bytesToCopy < chunk.value.length) {
-				buf.data = chunk.value;
-				buf.offset = bytesToCopy;
-			}
-		}
-		return result;
-	}
-
-	// Slow path: leftover buffer exists, must accumulate
 	const result = new Uint8Array(n);
 	let offset = 0;
 
-	const available = buf.data.length - buf.offset;
-	const bytesToCopy = Math.min(available, n);
-	result.set(buf.data.subarray(buf.offset, buf.offset + bytesToCopy), 0);
-	offset = bytesToCopy;
-	buf.offset += bytesToCopy;
+	// Drain leftover bytes from previous read
+	if (buf.data !== null) {
+		const available = buf.data.length - buf.offset;
+		const bytesToCopy = Math.min(available, n);
+		result.set(buf.data.subarray(buf.offset, buf.offset + bytesToCopy), 0);
+		offset = bytesToCopy;
+		buf.offset += bytesToCopy;
 
-	if (buf.offset >= buf.data.length) {
-		buf.data = null;
-		buf.offset = 0;
+		if (buf.offset >= buf.data.length) {
+			buf.data = null;
+			buf.offset = 0;
+		}
 	}
 
+	// Read from stream until we have n bytes
 	while (offset < n) {
 		const { value, done } = await reader.read();
 		if (done) return null;
-		if (value.length === 0) return null;
+		if (value === undefined || value.length === 0) return null;
 
-		const chunkCopy = Math.min(value.length, n - offset);
-		result.set(value.subarray(0, chunkCopy), offset);
-		offset += chunkCopy;
+		const bytesToCopy = Math.min(value.length, n - offset);
+		result.set(value.subarray(0, bytesToCopy), offset);
+		offset += bytesToCopy;
 
-		if (chunkCopy < value.length) {
+		// Save leftover bytes for next call
+		if (bytesToCopy < value.length) {
 			buf.data = value;
-			buf.offset = chunkCopy;
+			buf.offset = bytesToCopy;
 		}
 	}
 
