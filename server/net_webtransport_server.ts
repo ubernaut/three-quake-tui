@@ -322,8 +322,8 @@ async function _handleWebTransportSession(wt: WebTransport, address: string): Pr
 
 		sock.address = clientConn.address;
 		sock.driverdata = clientConn;
-		sock.connecttime = Date.now() / 1000;
-		sock.lastMessageTime = Date.now() / 1000;
+		sock.connecttime = performance.now() / 1000;
+		sock.lastMessageTime = performance.now() / 1000;
 
 		pendingConnections.push(sock);
 
@@ -736,7 +736,7 @@ export function WT_QGetMessage(sock: QSocket): number {
 		net_message.cursize++;
 	}
 
-	sock.lastMessageTime = Date.now() / 1000;
+	sock.lastMessageTime = performance.now() / 1000;
 
 	return msg.reliable ? 1 : 2;
 }
