@@ -125,8 +125,9 @@ for ( let i = 0; i < UPDATE_BACKUP; i++ ) {
 // Sequence tracking
 let outgoing_sequence = 0; // Next command to send
 let incoming_sequence = 0; // Last acknowledged command from server
-let validsequence = 0; // Last valid server frame sequence (0 = no valid data yet)
+let validsequence = 0; // Last valid packet-entity server sequence (0 = no valid data yet)
 let server_sequence = 0; // Latest server frame sequence received (from svc_serversequence)
+let has_server_state = false; // Have authoritative local player state for prediction baseline
 
 // Predicted position (used for rendering)
 export const cl_simorg = new Float32Array( 3 ); // Simulated/predicted origin
@@ -772,8 +773,8 @@ export function CL_PredictMove() {
 	if ( cl.intermission !== 0 )
 		return;
 
-	// Check if we have valid server data to predict from
-	if ( validsequence === 0 )
+	// Check if we have authoritative local-player state to predict from
+	if ( has_server_state === false )
 		return;
 
 	// Check if we have valid frames to predict from
@@ -864,6 +865,7 @@ export function CL_SetServerState( origin, velocity, onground ) {
 	VectorCopy( origin, frame.playerstate.origin );
 	VectorCopy( velocity, frame.playerstate.velocity );
 	frame.playerstate.onground = onground;
+	has_server_state = true;
 }
 
 /*
@@ -892,6 +894,7 @@ export function CL_ResetPrediction() {
 	incoming_sequence = 0;
 	validsequence = 0;
 	server_sequence = 0;
+	has_server_state = false;
 	cls_latency = 0;
 
 	cl_simorg.fill( 0 );

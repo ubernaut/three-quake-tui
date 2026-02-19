@@ -1018,9 +1018,6 @@ export function CL_ParseClientdata( bits ) {
 		const ent = cl_entities[ cl.viewentity ];
 		CL_SetServerState( ent.msg_origins[ 0 ], cl.mvelocity[ 0 ], cl.onground );
 
-		// Mark that we have valid server data for prediction
-		CL_SetValidSequence( ackSeq >= 0 ? ackSeq : 1 );
-
 	}
 
 }

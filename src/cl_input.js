@@ -426,7 +426,9 @@ export function CL_SendMove( cmd ) {
 	//
 	const validseq = CL_GetValidSequence();
 	const serverseq = CL_GetServerSequence();
-	if ( validseq !== 0 && serverseq - validseq < PE_UPDATE_BACKUP - 1 ) {
+	let frameDiff = ( serverseq & 255 ) - ( validseq & 255 );
+	if ( frameDiff < 0 ) frameDiff += 256;
+	if ( validseq !== 0 && frameDiff < PE_UPDATE_BACKUP - 1 ) {
 
 		MSG_WriteByte( buf, clc_delta );
 		MSG_WriteByte( buf, validseq & 255 );
