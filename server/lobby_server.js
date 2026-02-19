@@ -17,6 +17,7 @@ import {
 	RoomManager_GetRoom,
 	RoomManager_ListRooms,
 	RoomManager_CleanupIdleRooms,
+	RoomManager_CleanupUnhealthyRooms,
 	RoomManager_ShutdownAll,
 } from './room_process_manager.ts';
 
@@ -385,6 +386,11 @@ async function startServer() {
 
 	// Start cleanup timer (every 5 minutes)
 	setInterval( () => {
+		const unhealthy = RoomManager_CleanupUnhealthyRooms();
+		if ( unhealthy > 0 ) {
+			Sys_Printf( 'Cleaned up %d unhealthy rooms\n', unhealthy );
+		}
+
 		const cleaned = RoomManager_CleanupIdleRooms();
 		if ( cleaned > 0 ) {
 			Sys_Printf( 'Cleaned up %d idle rooms\n', cleaned );

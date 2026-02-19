@@ -7,6 +7,8 @@ import { Sys_Printf } from './sys_server.ts';
 // Port range for room servers (main lobby is on 4433)
 const BASE_PORT = 4434;
 const MAX_ROOMS = 10;
+const ROOM_STARTUP_GRACE_MS = 30 * 1000;
+const ROOM_WATCHDOG_TIMEOUT_MS = 30 * 1000;
 
 interface RoomProcess {
 	id: string;
@@ -18,6 +20,8 @@ interface RoomProcess {
 	createdAt: number;
 	playerCount: number;
 	lastActiveTime: number;  // Last time room had players (for idle cleanup)
+	lastOutputTime: number;  // Last stdout/stderr line seen from room process
+	lastWatchdogTime: number; // Last watchdog tick seen from room stderr
 }
 
 // Active room processes
@@ -82,6 +86,9 @@ export async function RoomManager_CreateRoom( config: {
 	hostName: string;
 	specificId?: string;
 } ): Promise<{ id: string; port: number } | null> {
+	// Reclaim any frozen rooms before enforcing limits/port availability.
+	RoomManager_CleanupUnhealthyRooms();
+
 	// Check room limit
 	if ( roomProcesses.size >= MAX_ROOMS ) {
 		Sys_Printf( 'Room limit reached (%d), rejecting room creation\n', MAX_ROOMS );
@@ -166,18 +173,24 @@ export async function RoomManager_CreateRoom( config: {
 			createdAt: now,
 			playerCount: 0,
 			lastActiveTime: now,  // Initialize to creation time
+			lastOutputTime: now,
+			lastWatchdogTime: now,
 		};
 		roomProcesses.set( id, roomInfo );
 
 		// Create a promise that resolves when we detect the server is listening
 		// This is much more robust than a fixed timeout
 		const STARTUP_TIMEOUT_MS = 15000;
-		let serverReadyResolve: ( () => void ) | null = null;
-		let serverReadyReject: ( ( err: Error ) => void ) | null = null;
-		const serverReadyPromise = new Promise<void>( ( resolve, reject ) => {
-			serverReadyResolve = resolve;
-			serverReadyReject = reject;
-		} );
+		let serverReady = false;
+		let serverStartError: Error | null = null;
+		const serverReadyPromise = ( async () => {
+			while ( serverReady === false ) {
+				if ( serverStartError !== null ) {
+					throw serverStartError;
+				}
+				await new Promise( resolve => setTimeout( resolve, 25 ) );
+			}
+		} )();
 
 		// Pipe stdout/stderr to main server console with prefix
 		// Also detect when server is ready and parse heartbeat messages
@@ -192,14 +205,15 @@ export async function RoomManager_CreateRoom( config: {
 					for ( const line of text.split( '\n' ) ) {
 						if ( line.trim() !== '' ) {
 							Sys_Printf( '[Room %s] %s\n', id, line );
+							const room = roomProcesses.get( id );
+							if ( room !== undefined ) {
+								room.lastOutputTime = Date.now();
+							}
 
 							// Detect when WebTransport server is actually listening
 							// This is the signal that clients can now connect
 							if ( line.includes( 'WebTransport server listening' ) ) {
-								if ( serverReadyResolve !== null ) {
-									serverReadyResolve();
-									serverReadyResolve = null;
-								}
+								serverReady = true;
 							}
 
 							// Parse heartbeat messages: "[Heartbeat] time=X frames=Y players=Z"
@@ -236,8 +250,8 @@ export async function RoomManager_CreateRoom( config: {
 				}
 			} catch { /* ignore */ }
 			// If stdout closes without seeing "listening", reject the promise
-			if ( serverReadyResolve !== null && serverReadyReject !== null ) {
-				serverReadyReject( new Error( 'Process stdout closed before server was ready' ) );
+			if ( serverReady === false && serverStartError === null ) {
+				serverStartError = new Error( 'Process stdout closed before server was ready' );
 			}
 		} )();
 
@@ -252,6 +266,14 @@ export async function RoomManager_CreateRoom( config: {
 					for ( const line of text.split( '\n' ) ) {
 						if ( line.trim() !== '' ) {
 							Sys_Printf( '[Room %s ERR] %s\n', id, line );
+							const room = roomProcesses.get( id );
+							if ( room !== undefined ) {
+								const now = Date.now();
+								room.lastOutputTime = now;
+								if ( line.includes( '[WATCHDOG]' ) ) {
+									room.lastWatchdogTime = now;
+								}
+							}
 						}
 					}
 				}
@@ -264,8 +286,8 @@ export async function RoomManager_CreateRoom( config: {
 			usedPorts.delete( port );
 			roomProcesses.delete( id );
 			// If process exits before ready, reject
-			if ( serverReadyReject !== null ) {
-				serverReadyReject( new Error( 'Process exited with code ' + status.code ) );
+			if ( serverReady === false && serverStartError === null ) {
+				serverStartError = new Error( 'Process exited with code ' + status.code );
 			}
 		} );
 
@@ -309,6 +331,8 @@ export function RoomManager_GetRoom( id: string ): {
 	playerCount: number;
 	createdAt: number;
 } | null {
+	RoomManager_CleanupUnhealthyRooms();
+
 	const room = roomProcesses.get( id.toUpperCase() );
 	if ( room == null ) return null;
 
@@ -334,6 +358,8 @@ export function RoomManager_ListRooms(): Array<{
 	maxPlayers: number;
 	playerCount: number;
 }> {
+	RoomManager_CleanupUnhealthyRooms();
+
 	const rooms: Array<{
 		id: string;
 		name: string;
@@ -355,6 +381,36 @@ export function RoomManager_ListRooms(): Array<{
 	}
 
 	return rooms;
+}
+
+/**
+ * Clean up unhealthy rooms (event loop freeze / no watchdog output).
+ * Room servers emit watchdog lines every 5s. If we stop receiving watchdog
+ * ticks for too long after startup, the process is considered wedged.
+ */
+export function RoomManager_CleanupUnhealthyRooms(): number {
+	const now = Date.now();
+	let cleaned = 0;
+
+	for ( const [ id, room ] of roomProcesses ) {
+		// Allow time for startup before enforcing watchdog checks.
+		if ( now - room.createdAt < ROOM_STARTUP_GRACE_MS ) {
+			continue;
+		}
+
+		const watchdogGapMs = now - room.lastWatchdogTime;
+		if ( watchdogGapMs > ROOM_WATCHDOG_TIMEOUT_MS ) {
+			Sys_Printf(
+				'Room %s has no watchdog output for %ds, terminating stuck process\n',
+				id,
+				Math.floor( watchdogGapMs / 1000 )
+			);
+			RoomManager_TerminateRoom( id );
+			cleaned++;
+		}
+	}
+
+	return cleaned;
 }
 
 /**
@@ -395,6 +451,8 @@ export function RoomManager_TerminateRoom( id: string ): boolean {
  * Clean up idle rooms (rooms with 0 players for too long)
  */
 export function RoomManager_CleanupIdleRooms( maxIdleMs: number = 5 * 60 * 1000 ): number {
+	RoomManager_CleanupUnhealthyRooms();
+
 	const now = Date.now();
 	let cleaned = 0;
 
