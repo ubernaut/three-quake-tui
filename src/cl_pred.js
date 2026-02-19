@@ -512,7 +512,7 @@ function CL_SetupPMove() {
 	CL_SetUpPlayerPrediction( true );
 
 	// Add other players as physics entities for collision
-	CL_SetSolidPlayers( cl.viewentity );
+	CL_SetSolidPlayers( cl.viewentity - 1 );
 }
 
 /*
@@ -529,7 +529,7 @@ function CL_SetSolidPlayers( playernum ) {
 		return;
 
 	// Use predicted player positions
-	for ( let j = 1; j < MAX_CLIENTS; j++ ) {
+	for ( let j = 0; j < MAX_CLIENTS; j++ ) {
 		const pplayer = predicted_players[ j ];
 
 		// Skip inactive players
