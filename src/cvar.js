@@ -206,6 +206,15 @@ Cvar_SetValue
 */
 export function Cvar_SetValue( var_name, value ) {
 
+	// Match original Quake behavior (va("%f", value)) and avoid scientific
+	// notation strings that Q_atof cannot parse correctly.
+	if ( Number.isFinite( value ) === true ) {
+
+		Cvar_Set( var_name, value.toFixed( 6 ) );
+		return;
+
+	}
+
 	Cvar_Set( var_name, String( value ) );
 
 }
