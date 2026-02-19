@@ -448,42 +448,41 @@ Ported from QuakeWorld cl_ents.c
 =================
 */
 function CL_SetSolidEntities() {
-	// Start after world model (physent 0)
-	// Iterate through all entities and add brush models with collision hulls
-	for ( let i = 1; i < cl.num_entities; i++ ) {
-		const ent = cl_entities[ i ];
+	if ( validsequence === 0 )
+		return;
 
-		// Skip entities without models
-		if ( ent.model == null )
+	const eframe = entity_frames[ validsequence & UPDATE_MASK ];
+	if ( eframe.invalid )
+		return;
+
+	const pak = eframe.packet_entities;
+
+	// Build solid physents from the current packet-entity snapshot.
+	// This mirrors QuakeWorld's CL_SetSolidEntities, which uses the
+	// authoritative frame data rather than potentially stale cl_entities.
+	for ( let i = 0; i < pak.num_entities; i++ ) {
+		const state = pak.entities[ i ];
+		if ( state.modelindex === 0 )
 			continue;
 
-		// Skip if not a brush model (type 0 = mod_brush)
-		if ( ent.model.type !== 0 )
+		const model = cl.model_precache[ state.modelindex ];
+		if ( model == null )
 			continue;
 
-		// Check if model has collision hull data (hulls[1] for player-sized collision)
-		// Brush models with collision have firstclipnode set to a valid node index
-		const hull = ent.model.hulls[ 1 ];
+		const hull = model.hulls[ 1 ];
 		if ( hull == null )
 			continue;
 
-		// QuakeWorld checks: hulls[1].firstclipnode || clipbox
-		// For brush submodels, firstclipnode will be set to the headnode
-		// A value of 0 with lastclipnode also 0 means no collision data
-		if ( hull.firstclipnode === 0 && hull.lastclipnode === 0 && hull.clipnodes == null )
+		if ( ! hull.firstclipnode && ! model.clipbox )
 			continue;
 
-		// Add this brush entity as a physics collision object
 		if ( pmove.numphysent >= pmove.physents.length )
 			break;
 
 		const pent = pmove.physents[ pmove.numphysent ];
-		pent.model = ent.model;
-		pent.origin[ 0 ] = ent.origin[ 0 ];
-		pent.origin[ 1 ] = ent.origin[ 1 ];
-		pent.origin[ 2 ] = ent.origin[ 2 ];
-		pent.info = i;
-
+		pent.model = model;
+		VectorCopy( state.origin, pent.origin );
+		pent.info = state.number;
 		pmove.numphysent++;
 	}
 }
