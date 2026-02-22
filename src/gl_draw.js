@@ -84,6 +84,18 @@ let _uiScale = 1;
 let _virtualWidth = 640;
 let _virtualHeight = 480;
 
+function _syncOverlayCanvasSize() {
+
+	if ( ! overlayCanvas ) return;
+	const dpr = window.devicePixelRatio || 1;
+	const targetW = Math.max( 1, Math.floor( ( _realVid.width || 640 ) * dpr ) );
+	const targetH = Math.max( 1, Math.floor( ( _realVid.height || 480 ) * dpr ) );
+
+	if ( overlayCanvas.width !== targetW ) overlayCanvas.width = targetW;
+	if ( overlayCanvas.height !== targetH ) overlayCanvas.height = targetH;
+
+}
+
 /*
 ================
 _calculateUIScale
@@ -431,9 +443,7 @@ export function Draw_Init( canvas ) {
 		// Resize overlay when window resizes (use physical pixels)
 		window.addEventListener( 'resize', function () {
 
-			const dpr = window.devicePixelRatio || 1;
-			overlayCanvas.width = Math.floor( _realVid.width * dpr );
-			overlayCanvas.height = Math.floor( _realVid.height * dpr );
+			_syncOverlayCanvasSize();
 			// Scale is applied per-frame in Draw_BeginFrame
 
 		} );
@@ -441,6 +451,7 @@ export function Draw_Init( canvas ) {
 	}
 
 	// Initial scale calculation
+	_syncOverlayCanvasSize();
 	_calculateUIScale();
 
 	// Register console commands
@@ -484,6 +495,8 @@ Applies UI scaling transform so all drawing happens in virtual coordinates.
 export function Draw_BeginFrame() {
 
 	if ( overlayCtx ) {
+
+		_syncOverlayCanvasSize();
 
 		// Reset transform and clear
 		overlayCtx.setTransform( 1, 0, 0, 1, 0, 0 );

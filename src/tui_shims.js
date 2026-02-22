@@ -712,6 +712,68 @@ const windowShim = {
 // ============================================================================
 
 const _tuiAudioDebug = process.env.QUAKE_TUI_AUDIO_DEBUG === '1';
+const _tuiAudioMaxProcessesEnv = Number.parseInt( process.env.QUAKE_TUI_AUDIO_MAX_PROCS || '24', 10 );
+const _tuiAudioMaxProcesses = Number.isFinite( _tuiAudioMaxProcessesEnv ) && _tuiAudioMaxProcessesEnv > 0
+	? _tuiAudioMaxProcessesEnv
+	: 24;
+const _tuiAudioPipeMuteMs = 3000;
+const _tuiAudioPipeFailureWindowMs = 1200;
+const _tuiAudioPipeFailureThreshold = 8;
+let _tuiAudioPipeFailureWindowStart = 0;
+let _tuiAudioPipeFailureCount = 0;
+let _tuiAudioMutedUntilMs = 0;
+let _tuiAudioMuteLogged = false;
+
+function _isBenignPipeError( err ) {
+
+	if ( ! err ) return false;
+	const code = err.code || '';
+	if ( code === 'EPIPE' || code === 'ERR_STREAM_DESTROYED' || code === 'ECONNRESET' )
+		return true;
+	const message = String( err.message || err );
+	return message.includes( 'EPIPE' ) || message.includes( 'broken pipe' );
+
+}
+
+function _isAudioTemporarilyMuted() {
+
+	return Date.now() < _tuiAudioMutedUntilMs;
+
+}
+
+function _noteAudioPipeFailure() {
+
+	const now = Date.now();
+
+	if ( now - _tuiAudioPipeFailureWindowStart > _tuiAudioPipeFailureWindowMs ) {
+
+		_tuiAudioPipeFailureWindowStart = now;
+		_tuiAudioPipeFailureCount = 0;
+
+	}
+
+	_tuiAudioPipeFailureCount ++;
+
+	if ( _tuiAudioPipeFailureCount >= _tuiAudioPipeFailureThreshold ) {
+
+		_tuiAudioMutedUntilMs = now + _tuiAudioPipeMuteMs;
+		_tuiAudioPipeFailureCount = 0;
+		_tuiAudioPipeFailureWindowStart = now;
+
+		if ( _tuiAudioDebug && ! _tuiAudioMuteLogged ) {
+
+			_tuiAudioMuteLogged = true;
+			console.error(
+				'[quake-tui] Audio backend temporarily muted for',
+				_tuiAudioPipeMuteMs,
+				'ms due to repeated pipe failures.'
+			);
+
+		}
+
+	}
+
+}
 
 function _hasCommand( command ) {
 
@@ -1156,6 +1218,7 @@ class AudioContextShim {
 		if ( this._closed || this.state !== 'running' ) return;
 		if ( ! source || ! source.buffer ) return;
 		if ( ! _audioBackend ) return;
+		if ( _isAudioTemporarilyMuted() ) return;
 
 		const mix = this._resolveMix( source );
 		const interleaved = this._interleaveBuffer( source.buffer, mix.gain, mix.pan );
@@ -1207,7 +1270,9 @@ class AudioContextShim {
 
 	_launchBufferSource( source, interleaved ) {
 
-		if ( source._stopped || this._closed || this.state !== 'running' ) return;
+		if ( source._stopped || this._closed || this.state !== 'running' ) return false;
+		if ( _isAudioTemporarilyMuted() ) return false;
+		if ( this._activeSources.size >= _tuiAudioMaxProcesses ) return false;
 
 		let proc;
 		try {
@@ -1220,10 +1285,40 @@ class AudioContextShim {
 
 		}
 
-		if ( ! proc ) return;
+		if ( ! proc ) return false;
 
 		this._activeSources.add( source );
 		source._process = proc;
+
+		const onProcessError = ( err ) => {
+
+			if ( ! err ) return;
+
+			if ( _isBenignPipeError( err ) ) {
+
+				_noteAudioPipeFailure();
+				if ( proc.stdin && ! proc.stdin.destroyed ) {
+
+					try {
+
+						proc.stdin.destroy();
+
+					} catch ( e ) { /* ignore */ }
+
+				}
+				return;
+
+			}
+
+			if ( _tuiAudioDebug ) {
+
+				console.error( '[quake-tui] audio process error:', err.message || String( err ) );
+
+			}
+
+		};
+
+		proc.on( 'error', onProcessError );
 
 		proc.on( 'exit', () => {
 
@@ -1239,7 +1334,9 @@ class AudioContextShim {
 
 			if ( source.loop ) {
 
-				this._launchBufferSource( source, interleaved );
+				const relaunched = this._launchBufferSource( source, interleaved );
+				if ( relaunched ) return;
+				this._activeSources.delete( source );
 				return;
 
 			}
@@ -1251,9 +1348,37 @@ class AudioContextShim {
 
 		if ( proc.stdin ) {
 
+			if ( typeof proc.stdin.on === 'function' )
+				proc.stdin.on( 'error', onProcessError );
+
 			const payload = _encodeAudioPayload( interleaved );
-			if ( payload.length > 0 ) proc.stdin.write( payload );
-			proc.stdin.end();
+			if ( payload.length > 0 && proc.stdin.writable && ! proc.stdin.destroyed ) {
+
+				try {
+
+					proc.stdin.write( payload );
+
+				} catch ( err ) {
+
+					onProcessError( err );
+
+				}
+
+			}
+
+			if ( proc.stdin.writable && ! proc.stdin.destroyed ) {
+
+				try {
+
+					proc.stdin.end();
+
+				} catch ( err ) {
+
+					onProcessError( err );
+
+				}
+
+			}
 
 		}
 
@@ -1267,6 +1392,8 @@ class AudioContextShim {
 			);
 
 		}
+
+		return true;
 
 	}
 

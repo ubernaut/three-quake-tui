@@ -76,9 +76,22 @@ let _xrPrevRightTrigger = false;
 
 function requestPointerLock() {
 
-	if ( pointerLocked || isQuest || targetElement == null ) return;
+	// TUI mode and Quest do not support DOM pointer lock.
+	if ( globalThis.__TUI_MODE === true || isQuest ) return;
+	if ( pointerLocked || targetElement == null ) return;
 
-	targetElement.requestPointerLock();
+	const request = targetElement.requestPointerLock || targetElement.webkitRequestPointerLock;
+	if ( typeof request !== 'function' ) return;
+
+	try {
+
+		request.call( targetElement );
+
+	} catch ( e ) {
+
+		// Ignore lock request failures outside browser gesture contexts.
+
+	}
 
 }
 
@@ -748,6 +761,8 @@ Only applies on desktop; mobile uses fullscreen instead.
 ===========
 */
 export function IN_RequestPointerLock() {
+
+	if ( globalThis.__TUI_MODE === true ) return;
 
 	if ( ! isMobile ) {
 

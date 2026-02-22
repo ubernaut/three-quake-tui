@@ -79,6 +79,37 @@ export let vid_menukeyfn = null;
 export let renderer = null; // THREE.WebGLRenderer
 export let canvas = null; // HTMLCanvasElement
 
+function _setVideoSize( width, height ) {
+
+	const w = Math.max( 1, width | 0 );
+	const h = Math.max( 1, height | 0 );
+	vid.width = w;
+	vid.height = h;
+	vid.aspect = w / h;
+	vid.rowbytes = w;
+	vid.conwidth = w;
+	vid.conheight = h;
+	vid.conrowbytes = vid.rowbytes;
+	vid.recalc_refdef = 1;
+
+	if ( ! vid.buffer || vid.buffer.length !== w * h ) {
+
+		vid.buffer = new Uint8Array( w * h );
+		vid.conbuffer = vid.buffer;
+
+	}
+
+}
+
+export function VID_TuiResize( width, height ) {
+
+	if ( globalThis.__TUI_MODE !== true ) return;
+	_setVideoSize( width, height );
+	globalThis.__TUI_WIDTH = vid.width;
+	globalThis.__TUI_HEIGHT = vid.height;
+
+}
+
 //============================================================================
 // VID_SetPalette
 //
@@ -169,12 +200,10 @@ export function VID_Init( palette ) {
 	// TUI mode: create a stub renderer (OpenTUI handles actual rendering)
 	if ( globalThis.__TUI_MODE ) {
 
-		vid.width = globalThis.__TUI_WIDTH || 320;
-		vid.height = globalThis.__TUI_HEIGHT || 240;
-		vid.aspect = vid.width / vid.height;
-		vid.rowbytes = vid.width;
-		vid.conwidth = vid.width;
-		vid.conheight = vid.height;
+		VID_TuiResize(
+			globalThis.__TUI_WIDTH || 320,
+			globalThis.__TUI_HEIGHT || 240
+		);
 
 		// Stub renderer - engine calls renderer.render() but it's a no-op.
 		// Actual rendering is done by OpenTUI's ThreeCliRenderer.
@@ -224,12 +253,7 @@ export function VID_Init( palette ) {
 	document.body.appendChild( canvas );
 
 	// update vid dimensions to match actual canvas
-	vid.width = canvas.width;
-	vid.height = canvas.height;
-	vid.aspect = vid.width / vid.height;
-	vid.rowbytes = vid.width;
-	vid.conwidth = vid.width;
-	vid.conheight = vid.height;
+	_setVideoSize( canvas.width, canvas.height );
 
 	// create Three.js WebGLRenderer (replaces raw GL context)
 	renderer = new THREE.WebGLRenderer( {
@@ -256,13 +280,7 @@ export function VID_Init( palette ) {
 
 		canvas.width = window.innerWidth;
 		canvas.height = window.innerHeight;
-		vid.width = canvas.width;
-		vid.height = canvas.height;
-		vid.aspect = vid.width / vid.height;
-		vid.rowbytes = vid.width;
-		vid.conwidth = vid.width;
-		vid.conheight = vid.height;
-		vid.recalc_refdef = 1;
+		_setVideoSize( canvas.width, canvas.height );
 
 		renderer.setSize( canvas.width, canvas.height );
 

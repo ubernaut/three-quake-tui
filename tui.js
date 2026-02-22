@@ -27,6 +27,102 @@ function log( ...args ) {
 
 }
 
+const TERMINAL_RESET_SEQUENCE = '\x1b[?1016l\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?2004l\x1b[?2031l\x1b[?2027l\x1b[?1049l\x1b[0m\x1b[?25h';
+let terminalResetDone = false;
+
+function emergencyTerminalReset( reason = '' ) {
+
+	if ( terminalResetDone ) return;
+	terminalResetDone = true;
+
+	if ( reason ) log( 'Emergency terminal reset:', reason );
+
+	try {
+
+		if ( process.stdout && process.stdout.writable )
+			process.stdout.write( TERMINAL_RESET_SEQUENCE );
+
+	} catch ( e ) { /* ignore terminal reset failures */ }
+
+}
+
+function installTerminalSafetyHandlers() {
+
+	const onStreamError = ( err ) => {
+
+		if ( err == null ) return;
+		if ( err.code === 'EPIPE' || err.code === 'ERR_STREAM_DESTROYED' ) {
+
+			emergencyTerminalReset( err.code );
+			setImmediate( () => process.exit( 0 ) );
+			return;
+
+		}
+
+		log( 'Stream error:', err.message || String( err ) );
+
+	};
+
+	process.stdout.on( 'error', onStreamError );
+	process.stderr.on( 'error', onStreamError );
+	process.on( 'exit', () => emergencyTerminalReset( 'process-exit' ) );
+	const onTerminateSignal = ( signal ) => {
+
+		emergencyTerminalReset( signal.toLowerCase() );
+		setImmediate( () => process.exit( 0 ) );
+
+	};
+	process.on( 'SIGTERM', () => onTerminateSignal( 'SIGTERM' ) );
+	process.on( 'SIGHUP', () => onTerminateSignal( 'SIGHUP' ) );
+	process.on( 'SIGQUIT', () => onTerminateSignal( 'SIGQUIT' ) );
+
+}
+
+installTerminalSafetyHandlers();
+
+function installConsoleNoiseFilters() {
+
+	const originalWarn = console.warn.bind( console );
+	const originalError = console.error.bind( console );
+	let uvWarningSuppressed = 0;
+	let epipeSuppressed = 0;
+
+	console.warn = ( ...args ) => {
+
+		const msg = args.map( a => String( a ) ).join( ' ' );
+		if ( msg.includes( 'AttributeNode: Vertex attribute "uv" not found on geometry.' ) ) {
+
+			uvWarningSuppressed ++;
+			if ( uvWarningSuppressed === 1 )
+				log( 'Suppressing repeated Three.js uv warnings' );
+			return;
+
+		}
+
+		originalWarn( ...args );
+
+	};
+
+	console.error = ( ...args ) => {
+
+		const msg = args.map( a => String( a ) ).join( ' ' );
+		if ( msg.includes( 'EPIPE: broken pipe, send' ) ) {
+
+			epipeSuppressed ++;
+			if ( epipeSuppressed === 1 )
+				log( 'Suppressing repeated EPIPE console errors' );
+			return;
+
+		}
+
+		originalError( ...args );
+
+	};
+
+}
+
+installConsoleNoiseFilters();
+
 // ============================================================================
 // 3. Import OpenTUI
 // ============================================================================
@@ -60,6 +156,8 @@ import { con_forcedup } from './src/console.js';
 import { cls, cl, SIGNONS } from './src/client.js';
 import { in_forward, in_back, in_moveleft, in_moveright } from './src/cl_input.js';
 import { IN_TuiInjectMouseDelta, IN_TuiSetMouseActive } from './src/in_web.js';
+import { M_TouchInput } from './src/menu.js';
+import { VID_TuiResize } from './src/vid.js';
 
 // ============================================================================
 // Main
@@ -78,18 +176,19 @@ async function main() {
 		// Load game data from filesystem
 		// ----------------------------------------------------------------
 
-		log( 'Loading pak0.pak...' );
-		const pak0 = await COM_FetchPak( 'pak0.pak', 'pak0.pak', () => {} );
+			log( 'Loading pak0.pak...' );
+			const pak0 = await COM_FetchPak( 'pak0.pak', 'pak0.pak', () => {} );
 
-		if ( pak0 ) {
+			if ( pak0 ) {
 
-			COM_AddPack( pak0 );
-			log( 'pak0.pak loaded successfully' );
+				COM_AddPack( pak0 );
+				log( 'pak0.pak loaded successfully' );
 
-		} else {
+			} else {
 
-			console.error( 'pak0.pak not found - place the Quake shareware pak0.pak in the project root' );
-			process.exit( 1 );
+				console.error( 'pak0.pak not found - place the Quake shareware pak0.pak in the project root' );
+				emergencyTerminalReset( 'missing-pak0' );
+				process.exit( 1 );
 
 		}
 
@@ -137,71 +236,143 @@ async function main() {
 		// Initialize OpenTUI
 		// ----------------------------------------------------------------
 
-			log( 'Creating CliRenderer...' );
-			const cliRenderer = await createCliRenderer( {
-				targetFps: 30,
-				exitOnCtrlC: false,
-				useMouse: true,
-				enableMouseMovement: true,
-				useAlternateScreen: true,
-				// Enable parsed key events (including keyrelease when terminal supports it).
-				useKittyKeyboard: {
-					disambiguate: true,
-					alternateKeys: true,
-					events: true
-				}
-			} );
+		log( 'Creating CliRenderer...' );
+		const targetFpsRaw = Number.parseInt( process.env.QUAKE_TUI_TARGET_FPS || '30', 10 );
+		const targetFps = Number.isFinite( targetFpsRaw ) && targetFpsRaw > 0 ? targetFpsRaw : 30;
+		const cliRenderer = await createCliRenderer( {
+			targetFps,
+			exitOnCtrlC: false,
+			useMouse: true,
+			enableMouseMovement: true,
+			useAlternateScreen: true,
+			// Enable parsed key events (including keyrelease when terminal supports it).
+			useKittyKeyboard: {
+				disambiguate: true,
+				alternateKeys: true,
+				events: true
+			}
+		} );
 
-		const termW = cliRenderer.width;
-		const termH = cliRenderer.height;
-		// ThreeCliRenderer handles internal supersampling itself.
-		const renderW = termW;
-		const renderH = termH;
+		const minRenderWidthRaw = Number.parseInt( process.env.QUAKE_TUI_MIN_RENDER_WIDTH || '320', 10 );
+		const minRenderHeightRaw = Number.parseInt( process.env.QUAKE_TUI_MIN_RENDER_HEIGHT || '240', 10 );
+		const maxRenderWidthRaw = Number.parseInt( process.env.QUAKE_TUI_MAX_RENDER_WIDTH || '1024', 10 );
+		const maxRenderHeightRaw = Number.parseInt( process.env.QUAKE_TUI_MAX_RENDER_HEIGHT || '768', 10 );
+		const renderScaleRaw = Number.parseFloat( process.env.QUAKE_TUI_RENDER_SCALE || '1' );
 
-		log( 'Terminal:', termW, 'x', termH, '=> render:', renderW, 'x', renderH );
+		const minRenderWidth = Number.isFinite( minRenderWidthRaw ) && minRenderWidthRaw > 0 ? minRenderWidthRaw : 320;
+		const minRenderHeight = Number.isFinite( minRenderHeightRaw ) && minRenderHeightRaw > 0 ? minRenderHeightRaw : 240;
+		const maxRenderWidthCandidate = Number.isFinite( maxRenderWidthRaw ) && maxRenderWidthRaw > 0 ? maxRenderWidthRaw : 1024;
+		const maxRenderHeightCandidate = Number.isFinite( maxRenderHeightRaw ) && maxRenderHeightRaw > 0 ? maxRenderHeightRaw : 768;
+		const maxRenderWidth = Math.max( minRenderWidth, maxRenderWidthCandidate );
+		const maxRenderHeight = Math.max( minRenderHeight, maxRenderHeightCandidate );
+		const renderScale = Number.isFinite( renderScaleRaw ) && renderScaleRaw > 0 ? renderScaleRaw : 1;
 
-		// Create ThreeCliRenderer
+		const minRenderCellsW = Math.max( 1, Math.floor( minRenderWidth / 2 ) );
+		const minRenderCellsH = Math.max( 1, Math.floor( minRenderHeight / 2 ) );
+		const maxRenderCellsW = Math.max( minRenderCellsW, Math.floor( maxRenderWidth / 2 ) );
+		const maxRenderCellsH = Math.max( minRenderCellsH, Math.floor( maxRenderHeight / 2 ) );
+
+		const computeRenderSize = ( termW, termH ) => {
+
+			const scaledW = Math.max( 1, Math.floor( termW * renderScale ) );
+			const scaledH = Math.max( 1, Math.floor( termH * renderScale ) );
+			const renderW = clampInt( scaledW, minRenderCellsW, maxRenderCellsW );
+			const renderH = clampInt( scaledH, minRenderCellsH, maxRenderCellsH );
+			return { renderW, renderH };
+
+		};
+
+		const syncQuakeVideoSize = ( cellW, cellH ) => {
+
+			// Terminal cell buffer is treated as a 2x supersampled Quake pixel grid.
+			const targetW = Math.max( 1, cellW * 2 );
+			const targetH = Math.max( 1, cellH * 2 );
+			VID_TuiResize( targetW, targetH );
+			log( 'Quake vid resize:', targetW + 'x' + targetH );
+
+		};
+
+		let { renderW, renderH } = computeRenderSize( cliRenderer.width, cliRenderer.height );
+
+		log(
+			'Terminal:', cliRenderer.width, 'x', cliRenderer.height,
+			'=> render:', renderW, 'x', renderH,
+			'(min px:', minRenderWidth + 'x' + minRenderHeight +
+			', max px:', maxRenderWidth + 'x' + maxRenderHeight +
+			', cell range:', minRenderCellsW + 'x' + minRenderCellsH + '..' + maxRenderCellsW + 'x' + maxRenderCellsH +
+			', scale:', renderScale.toFixed( 2 ) +
+			', fps:', targetFps + ')'
+		);
+
 		log( 'Creating ThreeCliRenderer...' );
 		const threeRenderer = new ThreeCliRenderer( cliRenderer, {
 			width: renderW,
 			height: renderH,
 			backgroundColor: { r: 0, g: 0, b: 0, a: 255 },
-			autoResize: true
+			autoResize: false
 		} );
 
 		await threeRenderer.init();
 		log( 'ThreeCliRenderer initialized' );
-
 		log( 'ThreeCliRenderer ready' );
+		syncQuakeVideoSize( renderW, renderH );
 
-			// Render scene into an offscreen buffer, then composite in post-process
-			// so root renderables cannot overwrite the 3D frame.
-			const sceneBuffer = OptimizedBuffer.create(
-				termW,
-				termH,
-				cliRenderer.nextRenderBuffer.widthMethod,
-				{ id: 'quake-scene-buffer' }
+		// Render scene into an offscreen buffer, then scale-composite in post-process
+		// so root renderables cannot overwrite the 3D frame.
+		const sceneBuffer = OptimizedBuffer.create(
+			renderW,
+			renderH,
+			cliRenderer.nextRenderBuffer.widthMethod,
+			{ id: 'quake-scene-buffer' }
+		);
+		let sceneBufferReady = false;
+
+		const onRendererResize = ( termW, termH ) => {
+
+			const next = computeRenderSize( termW, termH );
+			if ( next.renderW === renderW && next.renderH === renderH ) return;
+
+			renderW = next.renderW;
+			renderH = next.renderH;
+			threeRenderer.setSize( renderW, renderH, true );
+			sceneBuffer.resize( renderW, renderH );
+			sceneBufferReady = false;
+			syncQuakeVideoSize( renderW, renderH );
+
+			log(
+				'Terminal resize:',
+				termW + 'x' + termH,
+				'=> render:',
+				renderW + 'x' + renderH
 			);
-			let sceneBufferReady = false;
-			cliRenderer.on( 'destroy', () => sceneBuffer.destroy() );
 
-			const mouseCapture = new MouseCaptureRenderable( cliRenderer, {
-				id: 'quake-tui-mouse-capture',
-				position: 'absolute',
-				top: 0,
-				left: 0,
-				width: '100%',
-				height: '100%',
-				zIndex: 9999
-			} );
-			cliRenderer.root.add( mouseCapture );
+		};
+
+		cliRenderer.on( 'resize', onRendererResize );
+		cliRenderer.on( 'destroy', () => {
+
+			cliRenderer.off( 'resize', onRendererResize );
+			sceneBuffer.destroy();
+
+		} );
+
+		const mouseCapture = new MouseCaptureRenderable( cliRenderer, {
+			id: 'quake-tui-mouse-capture',
+			position: 'absolute',
+			top: 0,
+			left: 0,
+			width: '100%',
+			height: '100%',
+			zIndex: 9999
+		} );
+		cliRenderer.root.add( mouseCapture );
 
 		// ----------------------------------------------------------------
 		// Terminal keyboard input
 		// ----------------------------------------------------------------
 
-			setupTerminalInput( cliRenderer );
-			setupTerminalMouse( cliRenderer, mouseCapture );
+		setupTerminalInput( cliRenderer );
+		setupTerminalMouse( cliRenderer, mouseCapture );
 
 		// ----------------------------------------------------------------
 		// Game loop — render 3D scene in the async frame callback,
@@ -221,25 +392,29 @@ async function main() {
 			// Update Quake engine (game logic, physics, scene graph)
 			Host_Frame( dt );
 
-			// Render Three.js scene to the terminal buffer via GPU
-				if ( scene && camera ) {
+			if ( frameCount <= 60 || frameCount % 120 === 0 )
+				ensureSceneTextureUVs( scene );
 
-					threeRenderer.setActiveCamera( camera );
-					await threeRenderer.drawScene(
-						scene,
-						sceneBuffer,
-						deltaTime
-					);
-					boostBufferExposure( sceneBuffer, 2.0, 0.9 );
-					compositeOverlayIntoBuffer( sceneBuffer );
-					sceneBufferReady = true;
+			// Render Three.js scene to the terminal buffer via GPU
+			if ( scene && camera ) {
+
+				threeRenderer.setActiveCamera( camera );
+				await threeRenderer.drawScene( scene, sceneBuffer, deltaTime );
+				boostBufferExposure( sceneBuffer, 2.0, 0.9 );
+				compositeOverlayIntoBuffer( sceneBuffer );
+				sceneBufferReady = true;
 
 			}
 
 			if ( frameCount <= 3 || frameCount % 300 === 0 ) {
-				log( 'Frame', frameCount,
-					'scene:', scene ? scene.children.length + ' children' : 'null',
-					'camera:', camera ? 'pos=' + camera.position.x.toFixed( 0 ) + ',' + camera.position.y.toFixed( 0 ) + ',' + camera.position.z.toFixed( 0 ) : 'null'
+
+				log(
+					'Frame',
+					frameCount,
+					'scene:',
+					scene ? scene.children.length + ' children' : 'null',
+					'camera:',
+					camera ? 'pos=' + camera.position.x.toFixed( 0 ) + ',' + camera.position.y.toFixed( 0 ) + ',' + camera.position.z.toFixed( 0 ) : 'null'
 				);
 				logInputState( 'FrameState' );
 
@@ -251,7 +426,7 @@ async function main() {
 
 			if ( sceneBufferReady ) {
 
-				buffer.drawFrameBuffer( 0, 0, sceneBuffer );
+				blitScaledBufferNearest( sceneBuffer, buffer );
 
 			}
 
@@ -260,11 +435,12 @@ async function main() {
 		log( 'Starting render loop...' );
 		cliRenderer.start();
 
-	} catch ( e ) {
+		} catch ( e ) {
 
-		log( 'FATAL ERROR:', e.message, e.stack );
-		console.error( 'Three-Quake TUI Fatal Error:', e );
-		process.exit( 1 );
+			log( 'FATAL ERROR:', e.message, e.stack );
+			console.error( 'Three-Quake TUI Fatal Error:', e );
+			emergencyTerminalReset( 'main-fatal' );
+			process.exit( 1 );
 
 	}
 
@@ -473,7 +649,16 @@ function setupTerminalInput( cliRenderer ) {
 	function handleCtrlC() {
 
 		cleanup();
-		cliRenderer.destroy();
+		try {
+
+			cliRenderer.destroy();
+
+		} catch ( e ) {
+
+			log( 'Destroy error during Ctrl+C:', e && e.message ? e.message : String( e ) );
+
+		}
+		emergencyTerminalReset( 'ctrl-c' );
 		process.exit( 0 );
 
 	}
@@ -616,6 +801,21 @@ function setupTerminalMouse( cliRenderer, mouseCapture ) {
 
 	}
 
+	function handleMenuClick( event ) {
+
+		const screenWidth = Math.max( 1, cliRenderer.width | 0 );
+		const screenHeight = Math.max( 1, cliRenderer.height | 0 );
+		const eventX = Number.isFinite( event.x ) ? event.x : 0;
+		const eventY = Number.isFinite( event.y ) ? event.y : 0;
+		const x = clampInt( eventX | 0, 0, screenWidth - 1 );
+		const y = clampInt( eventY | 0, 0, screenHeight - 1 );
+		M_TouchInput( x, y, screenWidth, screenHeight );
+
+		if ( inputDebug )
+			log( 'Menu click:', x + ',' + y, 'screen=' + screenWidth + 'x' + screenHeight );
+
+	}
+
 	function pressMouseKey( key ) {
 
 		if ( pressedMouseKeys.has( key ) ) return;
@@ -721,19 +921,29 @@ function setupTerminalMouse( cliRenderer, mouseCapture ) {
 				const b2 = data[ offset + 2 ];
 				offset += 3;
 
-				// Ignore malformed packets that do not have the sync bit set.
-				if ( ( b0 & 0x08 ) === 0 ) continue;
+					// Ignore malformed packets that do not have the sync bit set.
+					if ( ( b0 & 0x08 ) === 0 ) continue;
 
-				const dx = ( b1 << 24 ) >> 24;
-				// In PS/2 packets positive Y means up; invert to make down positive.
-				const dy = - ( ( b2 << 24 ) >> 24 );
-				injectRawLookDelta( dx, dy );
+					const dx = ( b1 << 24 ) >> 24;
+					// In PS/2 packets positive Y means up; invert to make down positive.
+					const dy = - ( ( b2 << 24 ) >> 24 );
+					injectRawLookDelta( dx, dy );
 
-				setMouseKeyState( K_MOUSE1, ( b0 & 0x01 ) !== 0 );
-				setMouseKeyState( K_MOUSE2, ( b0 & 0x02 ) !== 0 );
-				setMouseKeyState( K_MOUSE3, ( b0 & 0x04 ) !== 0 );
+					if ( key_dest === key_menu ) {
 
-			}
+						releaseMouseKey( K_MOUSE1 );
+						releaseMouseKey( K_MOUSE2 );
+						releaseMouseKey( K_MOUSE3 );
+
+					} else {
+
+						setMouseKeyState( K_MOUSE1, ( b0 & 0x01 ) !== 0 );
+						setMouseKeyState( K_MOUSE2, ( b0 & 0x02 ) !== 0 );
+						setMouseKeyState( K_MOUSE3, ( b0 & 0x04 ) !== 0 );
+
+					}
+
+				}
 
 			remainder = offset < data.length ? data.slice( offset ) : Buffer.alloc( 0 );
 
@@ -802,6 +1012,23 @@ function setupTerminalMouse( cliRenderer, mouseCapture ) {
 
 		lastX = event.x;
 		lastY = event.y;
+
+		if ( event.button === 0 && key_dest === key_menu ) {
+
+			handleMenuClick( event );
+			event.preventDefault();
+			return;
+
+		}
+
+		if ( event.button === 0 && key_dest === key_game && cls.demoplayback ) {
+
+			M_TouchInput( 0, 0, 1, 1 );
+			event.preventDefault();
+			return;
+
+		}
+
 		if ( rawMouseActive ) return;
 		const key = toQuakeMouseKey( event.button );
 		if ( key !== undefined ) {
@@ -911,6 +1138,149 @@ function setupTerminalMouse( cliRenderer, mouseCapture ) {
 	}
 
 	cliRenderer.on( 'destroy', cleanup );
+
+}
+
+const _uvSanitizedGeometries = new WeakSet();
+const _uvSanitizeFailedGeometries = new WeakSet();
+let _uvPatchedCount = 0;
+
+function ensureSceneTextureUVs( root ) {
+
+	if ( ! root || typeof root.traverse !== 'function' ) return;
+
+	root.traverse( ( object3d ) => {
+
+		const geometry = object3d && object3d.geometry;
+		if ( ! geometry || _uvSanitizedGeometries.has( geometry ) || _uvSanitizeFailedGeometries.has( geometry ) ) return;
+
+		try {
+
+			const position = geometry.getAttribute ? geometry.getAttribute( 'position' ) : null;
+			const vertexCount = position && Number.isFinite( position.count ) ? position.count : 0;
+			if ( vertexCount <= 0 ) {
+
+				_uvSanitizedGeometries.add( geometry );
+				return;
+
+			}
+
+			let patched = false;
+			let uvAttr = geometry.getAttribute( 'uv' );
+
+			if ( uvAttr == null ) {
+
+				uvAttr = new THREE.Float32BufferAttribute( vertexCount * 2, 2 );
+				geometry.setAttribute( 'uv', uvAttr );
+				patched = true;
+
+			}
+
+			if ( geometry.getAttribute( 'uv1' ) == null ) {
+
+				geometry.setAttribute( 'uv1', uvAttr );
+				patched = true;
+
+			}
+
+			if ( patched ) {
+
+				_uvPatchedCount ++;
+				if ( runtimeDebug || _uvPatchedCount <= 5 ) {
+
+					log(
+						'Patched missing uv attributes:',
+						object3d.type || 'Object3D',
+						object3d.name || '(unnamed)',
+						'verts=' + vertexCount
+					);
+
+				} else if ( _uvPatchedCount === 6 ) {
+
+					log( 'Patched missing uv attributes: (additional logs suppressed)' );
+
+				}
+
+			}
+
+			_uvSanitizedGeometries.add( geometry );
+
+		} catch ( error ) {
+
+			_uvSanitizeFailedGeometries.add( geometry );
+			log(
+				'Failed to patch uv attributes:',
+				object3d && object3d.type ? object3d.type : 'Object3D',
+				error && error.message ? error.message : String( error )
+			);
+
+		}
+
+	} );
+
+}
+
+function clampInt( value, min, max ) {
+
+	if ( value < min ) return min;
+	if ( value > max ) return max;
+	return value | 0;
+
+}
+
+function blitScaledBufferNearest( srcBuffer, dstBuffer ) {
+
+	const srcW = srcBuffer.width;
+	const srcH = srcBuffer.height;
+	const dstW = dstBuffer.width;
+	const dstH = dstBuffer.height;
+
+	if ( srcW === dstW && srcH === dstH ) {
+
+		dstBuffer.drawFrameBuffer( 0, 0, srcBuffer );
+		return;
+
+	}
+
+	const srcChars = srcBuffer.buffers.char;
+	const srcFg = srcBuffer.buffers.fg;
+	const srcBg = srcBuffer.buffers.bg;
+	const srcAttrs = srcBuffer.buffers.attributes;
+	const dstChars = dstBuffer.buffers.char;
+	const dstFg = dstBuffer.buffers.fg;
+	const dstBg = dstBuffer.buffers.bg;
+	const dstAttrs = dstBuffer.buffers.attributes;
+
+	for ( let y = 0; y < dstH; y ++ ) {
+
+		const sy = Math.min( srcH - 1, Math.floor( y * srcH / dstH ) );
+		const srcRow = sy * srcW;
+		const dstRow = y * dstW;
+
+		for ( let x = 0; x < dstW; x ++ ) {
+
+			const sx = Math.min( srcW - 1, Math.floor( x * srcW / dstW ) );
+			const srcCellIdx = srcRow + sx;
+			const dstCellIdx = dstRow + x;
+			const srcColorIdx = srcCellIdx * 4;
+			const dstColorIdx = dstCellIdx * 4;
+
+			dstChars[ dstCellIdx ] = srcChars[ srcCellIdx ];
+			dstAttrs[ dstCellIdx ] = srcAttrs[ srcCellIdx ];
+
+			dstFg[ dstColorIdx ] = srcFg[ srcColorIdx ];
+			dstFg[ dstColorIdx + 1 ] = srcFg[ srcColorIdx + 1 ];
+			dstFg[ dstColorIdx + 2 ] = srcFg[ srcColorIdx + 2 ];
+			dstFg[ dstColorIdx + 3 ] = srcFg[ srcColorIdx + 3 ];
+
+			dstBg[ dstColorIdx ] = srcBg[ srcColorIdx ];
+			dstBg[ dstColorIdx + 1 ] = srcBg[ srcColorIdx + 1 ];
+			dstBg[ dstColorIdx + 2 ] = srcBg[ srcColorIdx + 2 ];
+			dstBg[ dstColorIdx + 3 ] = srcBg[ srcColorIdx + 3 ];
+
+		}
+
+	}
 
 }
 
