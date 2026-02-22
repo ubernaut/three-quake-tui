@@ -14,7 +14,7 @@ import './src/tui_shims.js';
 // 2. Debug log to file (since terminal is used for rendering)
 // ============================================================================
 
-import { appendFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, writeFileSync, createReadStream } from 'node:fs';
 
 const LOG_FILE = '/tmp/quake-tui.log';
 writeFileSync( LOG_FILE, '' );
@@ -31,7 +31,7 @@ function log( ...args ) {
 // 3. Import OpenTUI
 // ============================================================================
 
-import { createCliRenderer, OptimizedBuffer } from '@opentui/core';
+import { createCliRenderer, OptimizedBuffer, Renderable } from '@opentui/core';
 import { ThreeCliRenderer } from '@opentui/core/3d';
 import * as THREE from 'three';
 
@@ -45,6 +45,7 @@ import { Host_Init, Host_Frame } from './src/host.js';
 import { COM_FetchPak, COM_AddPack, COM_PreloadMaps } from './src/pak.js';
 import { Cbuf_AddText } from './src/cmd.js';
 import { scene, camera } from './src/gl_rmain.js';
+import { Draw_GetOverlayCanvas } from './src/gl_draw.js';
 import { Key_Event } from './src/keys.js';
 import {
 	key_dest, key_game, key_console, key_message, key_menu, keybindings,
@@ -52,11 +53,13 @@ import {
 	K_UPARROW, K_DOWNARROW, K_LEFTARROW, K_RIGHTARROW,
 	K_ALT, K_CTRL, K_SHIFT,
 	K_F1, K_F2, K_F3, K_F4, K_F5, K_F6, K_F7, K_F8, K_F9, K_F10, K_F11, K_F12,
-	K_INS, K_DEL, K_PGDN, K_PGUP, K_HOME, K_END
+	K_INS, K_DEL, K_PGDN, K_PGUP, K_HOME, K_END,
+	K_MOUSE1, K_MOUSE2, K_MOUSE3, K_MWHEELUP, K_MWHEELDOWN
 } from './src/keys.js';
 import { con_forcedup } from './src/console.js';
 import { cls, cl, SIGNONS } from './src/client.js';
 import { in_forward, in_back, in_moveleft, in_moveright } from './src/cl_input.js';
+import { IN_TuiInjectMouseDelta, IN_TuiSetMouseActive } from './src/in_web.js';
 
 // ============================================================================
 // Main
@@ -134,19 +137,20 @@ async function main() {
 		// Initialize OpenTUI
 		// ----------------------------------------------------------------
 
-		log( 'Creating CliRenderer...' );
-		const cliRenderer = await createCliRenderer( {
-			targetFps: 30,
-			exitOnCtrlC: false,
-			useMouse: false,
-			useAlternateScreen: true,
-			// Enable parsed key events (including keyrelease when terminal supports it).
-			useKittyKeyboard: {
-				disambiguate: true,
-				alternateKeys: true,
-				events: true
-			}
-		} );
+			log( 'Creating CliRenderer...' );
+			const cliRenderer = await createCliRenderer( {
+				targetFps: 30,
+				exitOnCtrlC: false,
+				useMouse: true,
+				enableMouseMovement: true,
+				useAlternateScreen: true,
+				// Enable parsed key events (including keyrelease when terminal supports it).
+				useKittyKeyboard: {
+					disambiguate: true,
+					alternateKeys: true,
+					events: true
+				}
+			} );
 
 		const termW = cliRenderer.width;
 		const termH = cliRenderer.height;
@@ -170,22 +174,34 @@ async function main() {
 
 		log( 'ThreeCliRenderer ready' );
 
-		// Render scene into an offscreen buffer, then composite in post-process
-		// so root renderables cannot overwrite the 3D frame.
-		const sceneBuffer = OptimizedBuffer.create(
-			termW,
-			termH,
-			cliRenderer.nextRenderBuffer.widthMethod,
-			{ id: 'quake-scene-buffer' }
-		);
-		let sceneBufferReady = false;
-		cliRenderer.on( 'destroy', () => sceneBuffer.destroy() );
+			// Render scene into an offscreen buffer, then composite in post-process
+			// so root renderables cannot overwrite the 3D frame.
+			const sceneBuffer = OptimizedBuffer.create(
+				termW,
+				termH,
+				cliRenderer.nextRenderBuffer.widthMethod,
+				{ id: 'quake-scene-buffer' }
+			);
+			let sceneBufferReady = false;
+			cliRenderer.on( 'destroy', () => sceneBuffer.destroy() );
+
+			const mouseCapture = new MouseCaptureRenderable( cliRenderer, {
+				id: 'quake-tui-mouse-capture',
+				position: 'absolute',
+				top: 0,
+				left: 0,
+				width: '100%',
+				height: '100%',
+				zIndex: 9999
+			} );
+			cliRenderer.root.add( mouseCapture );
 
 		// ----------------------------------------------------------------
 		// Terminal keyboard input
 		// ----------------------------------------------------------------
 
-		setupTerminalInput( cliRenderer );
+			setupTerminalInput( cliRenderer );
+			setupTerminalMouse( cliRenderer, mouseCapture );
 
 		// ----------------------------------------------------------------
 		// Game loop — render 3D scene in the async frame callback,
@@ -206,16 +222,17 @@ async function main() {
 			Host_Frame( dt );
 
 			// Render Three.js scene to the terminal buffer via GPU
-			if ( scene && camera ) {
+				if ( scene && camera ) {
 
-				threeRenderer.setActiveCamera( camera );
-				await threeRenderer.drawScene(
-					scene,
-					sceneBuffer,
-					deltaTime
-				);
-				boostBufferExposure( sceneBuffer, 2.0, 0.9 );
-				sceneBufferReady = true;
+					threeRenderer.setActiveCamera( camera );
+					await threeRenderer.drawScene(
+						scene,
+						sceneBuffer,
+						deltaTime
+					);
+					boostBufferExposure( sceneBuffer, 2.0, 0.9 );
+					compositeOverlayIntoBuffer( sceneBuffer );
+					sceneBufferReady = true;
 
 			}
 
@@ -260,6 +277,18 @@ async function main() {
 function setupTerminalInput( cliRenderer ) {
 
 	const inputDebug = process.env.QUAKE_TUI_INPUT_DEBUG === '1';
+	const fallbackTapReleaseRaw = Number.parseInt( process.env.QUAKE_TUI_TAP_RELEASE_MS || '28', 10 );
+	const fallbackTapReleaseMs = Number.isFinite( fallbackTapReleaseRaw ) && fallbackTapReleaseRaw > 0
+		? fallbackTapReleaseRaw
+		: 28;
+	const fallbackInitialHoldRaw = Number.parseInt( process.env.QUAKE_TUI_HOLD_INITIAL_MS || '240', 10 );
+	const fallbackInitialHoldMs = Number.isFinite( fallbackInitialHoldRaw ) && fallbackInitialHoldRaw > 0
+		? fallbackInitialHoldRaw
+		: 240;
+	const fallbackRepeatHoldRaw = Number.parseInt( process.env.QUAKE_TUI_HOLD_REPEAT_MS || '70', 10 );
+	const fallbackRepeatHoldMs = Number.isFinite( fallbackRepeatHoldRaw ) && fallbackRepeatHoldRaw > 0
+		? fallbackRepeatHoldRaw
+		: 70;
 
 	const parsedKeyMap = {
 		escape: K_ESCAPE,
@@ -328,13 +357,10 @@ function setupTerminalInput( cliRenderer ) {
 		'\x1b[H': K_HOME,
 		'\x1b[F': K_END
 	};
-	const knownRawEscapeSequences = Object.keys( rawKeyMap )
-		.filter( s => s.startsWith( '\x1b' ) )
-		.sort( ( a, b ) => b.length - a.length );
 
 	const pressedKeys = new Set();
 	const releaseTimers = new Map();
-	let pendingRaw = '';
+	let hasKeyReleaseEvents = false;
 
 	function clearReleaseTimer( key ) {
 
@@ -348,7 +374,37 @@ function setupTerminalInput( cliRenderer ) {
 
 	}
 
-	function scheduleReleaseFallback( key ) {
+	function clearAllReleaseTimers() {
+
+		for ( const timer of releaseTimers.values() ) clearTimeout( timer );
+		releaseTimers.clear();
+
+	}
+
+	function releasePressedKeys() {
+
+		for ( const key of Array.from( pressedKeys ) ) releaseKey( key );
+
+	}
+
+	function isHoldBindingKey( key ) {
+
+		const binding = keybindings[ key ];
+		return typeof binding === 'string' && binding.startsWith( '+' );
+
+	}
+
+	function getFallbackReleaseMs( key, isRepeatKeyPress ) {
+
+		if ( ! isHoldBindingKey( key ) ) return fallbackTapReleaseMs;
+
+		return isRepeatKeyPress ? fallbackRepeatHoldMs : fallbackInitialHoldMs;
+
+	}
+
+	function scheduleReleaseFallback( key, delayMs ) {
+
+		if ( hasKeyReleaseEvents ) return;
 
 		clearReleaseTimer( key );
 		const timer = setTimeout( () => {
@@ -361,7 +417,7 @@ function setupTerminalInput( cliRenderer ) {
 
 			}
 
-		}, 180 );
+		}, delayMs );
 		releaseTimers.set( key, timer );
 
 	}
@@ -381,6 +437,7 @@ function setupTerminalInput( cliRenderer ) {
 
 	function pressKey( key ) {
 
+		const alreadyPressed = pressedKeys.has( key );
 		if ( ! pressedKeys.has( key ) ) {
 
 			pressedKeys.add( key );
@@ -390,7 +447,7 @@ function setupTerminalInput( cliRenderer ) {
 		}
 
 		// Fallback for terminals that do not emit keyrelease events.
-		scheduleReleaseFallback( key );
+		if ( ! hasKeyReleaseEvents ) scheduleReleaseFallback( key, getFallbackReleaseMs( key, alreadyPressed ) );
 
 	}
 
@@ -423,12 +480,17 @@ function setupTerminalInput( cliRenderer ) {
 
 	function handleRawSequence( sequence ) {
 
+		if ( typeof sequence !== 'string' || sequence.length === 0 ) return false;
+
 		if ( sequence === '\x03' ) {
 
 			handleCtrlC();
 			return true;
 
 		}
+
+		// Kitty keyboard sequences are already emitted by keyInput.
+		if ( sequence.startsWith( '\x1b[' ) && sequence.endsWith( 'u' ) ) return false;
 
 		const quakeKey = rawKeyMap[ sequence ];
 		if ( quakeKey !== undefined ) {
@@ -454,48 +516,6 @@ function setupTerminalInput( cliRenderer ) {
 
 	}
 
-	function feedRawInput( chunk ) {
-
-		pendingRaw += chunk;
-		while ( pendingRaw.length > 0 ) {
-
-			// Non-escape single byte.
-			if ( pendingRaw[ 0 ] !== '\x1b' ) {
-
-				const ch = pendingRaw[ 0 ];
-				pendingRaw = pendingRaw.slice( 1 );
-				handleRawSequence( ch );
-				continue;
-
-			}
-
-			let matched = false;
-			for ( const seq of knownRawEscapeSequences ) {
-
-				if ( pendingRaw.startsWith( seq ) ) {
-
-					pendingRaw = pendingRaw.slice( seq.length );
-					handleRawSequence( seq );
-					matched = true;
-					break;
-
-				}
-
-			}
-
-			if ( matched ) continue;
-
-			const maybePartial = knownRawEscapeSequences.some( seq => seq.startsWith( pendingRaw ) );
-			if ( maybePartial ) break;
-
-			// Unknown escape payload: at least consume ESC.
-			handleRawSequence( '\x1b' );
-			pendingRaw = pendingRaw.slice( 1 );
-
-		}
-
-	}
-
 	const onKeyPress = ( event ) => {
 
 		if ( event && event.ctrl && event.name === 'c' ) {
@@ -517,18 +537,19 @@ function setupTerminalInput( cliRenderer ) {
 
 		const quakeKey = toQuakeKey( event );
 		if ( quakeKey === undefined ) return;
+		if ( ! hasKeyReleaseEvents ) {
+
+			hasKeyReleaseEvents = true;
+			clearAllReleaseTimers();
+			if ( inputDebug ) log( 'Detected keyrelease support from terminal' );
+
+		}
 		if ( inputDebug ) log( 'Parsed keyrelease:', event.name, 'seq=', JSON.stringify( event.sequence ) );
 		releaseKey( quakeKey );
 
 	};
 
-	const onRawStdin = ( data ) => {
-
-		const chunk = typeof data === 'string' ? data : String( data );
-		if ( inputDebug ) log( 'stdin chunk:', JSON.stringify( chunk ) );
-		feedRawInput( chunk );
-
-	};
+	const onBlur = () => releasePressedKeys();
 
 	const onSigInt = () => handleCtrlC();
 	const onSigTerm = () => handleCtrlC();
@@ -538,23 +559,357 @@ function setupTerminalInput( cliRenderer ) {
 		cliRenderer.removeInputHandler( handleRawSequence );
 		cliRenderer.keyInput.off( 'keypress', onKeyPress );
 		cliRenderer.keyInput.off( 'keyrelease', onKeyRelease );
-		process.stdin.off( 'data', onRawStdin );
+		cliRenderer.off( 'blur', onBlur );
 		process.off( 'SIGINT', onSigInt );
 		process.off( 'SIGTERM', onSigTerm );
-		for ( const timer of releaseTimers.values() ) clearTimeout( timer );
-		releaseTimers.clear();
-		for ( const key of pressedKeys ) Key_Event( key, false );
-		pressedKeys.clear();
-		pendingRaw = '';
+		clearAllReleaseTimers();
+		releasePressedKeys();
+		hasKeyReleaseEvents = false;
 
 	}
 
 	cliRenderer.addInputHandler( handleRawSequence );
 	cliRenderer.keyInput.on( 'keypress', onKeyPress );
 	cliRenderer.keyInput.on( 'keyrelease', onKeyRelease );
-	process.stdin.on( 'data', onRawStdin );
+	cliRenderer.on( 'blur', onBlur );
 	process.on( 'SIGINT', onSigInt );
 	process.on( 'SIGTERM', onSigTerm );
+	cliRenderer.on( 'destroy', cleanup );
+
+}
+
+class MouseCaptureRenderable extends Renderable {
+
+	renderSelf() {}
+
+}
+
+function setupTerminalMouse( cliRenderer, mouseCapture ) {
+
+	const inputDebug = process.env.QUAKE_TUI_INPUT_DEBUG === '1';
+	const enableMouseLook = process.env.QUAKE_TUI_MOUSE_LOOK !== '0';
+	const cellScaleRaw = Number.parseFloat( process.env.QUAKE_TUI_MOUSE_CELL_SCALE || '20' );
+	const cellScale = Number.isFinite( cellScaleRaw ) && cellScaleRaw > 0 ? cellScaleRaw : 20;
+	const useRawMouse = process.env.QUAKE_TUI_RAW_MOUSE === '1';
+	const rawMouseDevice = process.env.QUAKE_TUI_RAW_MOUSE_DEVICE || '/dev/input/mice';
+	const rawMouseScaleRaw = Number.parseFloat( process.env.QUAKE_TUI_RAW_MOUSE_SCALE || '1.4' );
+	const rawMouseScale = Number.isFinite( rawMouseScaleRaw ) && rawMouseScaleRaw > 0 ? rawMouseScaleRaw : 1.4;
+
+	let lastX = null;
+	let lastY = null;
+	let rawMouseActive = false;
+	let rawMouseErrorLogged = false;
+	let rendererFocused = true;
+	const pressedMouseKeys = new Set();
+	let rawMouseCleanup = () => {};
+
+	function toQuakeMouseKey( button ) {
+
+		switch ( button ) {
+
+			case 0: return K_MOUSE1;
+			case 2: return K_MOUSE2;
+			case 1: return K_MOUSE3;
+			default: return undefined;
+
+		}
+
+	}
+
+	function pressMouseKey( key ) {
+
+		if ( pressedMouseKeys.has( key ) ) return;
+		pressedMouseKeys.add( key );
+		Key_Event( key, true );
+
+	}
+
+	function setMouseKeyState( key, isDown ) {
+
+		if ( isDown ) {
+
+			pressMouseKey( key );
+			return;
+
+		}
+
+		releaseMouseKey( key );
+
+	}
+
+	function releaseMouseKey( key ) {
+
+		if ( pressedMouseKeys.has( key ) ) {
+
+			pressedMouseKeys.delete( key );
+			Key_Event( key, false );
+
+		}
+
+	}
+
+	function applyLookDelta( event ) {
+
+		if ( rawMouseActive ) {
+
+			lastX = event.x;
+			lastY = event.y;
+			return;
+
+		}
+
+		if ( ! enableMouseLook || key_dest !== key_game ) {
+
+			lastX = event.x;
+			lastY = event.y;
+			return;
+
+		}
+
+		if ( lastX === null || lastY === null ) {
+
+			lastX = event.x;
+			lastY = event.y;
+			return;
+
+		}
+
+		const dx = ( event.x - lastX ) * cellScale;
+		const dy = ( event.y - lastY ) * cellScale;
+		lastX = event.x;
+		lastY = event.y;
+
+		if ( dx !== 0 || dy !== 0 ) {
+
+			IN_TuiInjectMouseDelta( dx, dy );
+			if ( inputDebug ) log( 'Mouse look delta:', dx.toFixed( 1 ), dy.toFixed( 1 ) );
+
+		}
+
+	}
+
+	function injectRawLookDelta( dx, dy ) {
+
+		if ( ! enableMouseLook || key_dest !== key_game || ! rendererFocused ) return;
+		if ( dx === 0 && dy === 0 ) return;
+
+		const sx = dx * rawMouseScale;
+		const sy = dy * rawMouseScale;
+		IN_TuiInjectMouseDelta( sx, sy );
+		if ( inputDebug ) log( 'Raw mouse look delta:', sx.toFixed( 1 ), sy.toFixed( 1 ) );
+
+	}
+
+	function setupRawMouseReader() {
+
+		if ( ! useRawMouse ) return () => {};
+		if ( inputDebug ) log( 'Raw mouse requested path=', rawMouseDevice, 'scale=', rawMouseScale );
+
+		let stream;
+		let remainder = Buffer.alloc( 0 );
+
+		function onData( chunk ) {
+
+			const chunkBuffer = Buffer.isBuffer( chunk ) ? chunk : Buffer.from( chunk );
+			const data = remainder.length === 0 ? chunkBuffer : Buffer.concat( [ remainder, chunkBuffer ] );
+			let offset = 0;
+
+			while ( offset + 3 <= data.length ) {
+
+				const b0 = data[ offset ];
+				const b1 = data[ offset + 1 ];
+				const b2 = data[ offset + 2 ];
+				offset += 3;
+
+				// Ignore malformed packets that do not have the sync bit set.
+				if ( ( b0 & 0x08 ) === 0 ) continue;
+
+				const dx = ( b1 << 24 ) >> 24;
+				// In PS/2 packets positive Y means up; invert to make down positive.
+				const dy = - ( ( b2 << 24 ) >> 24 );
+				injectRawLookDelta( dx, dy );
+
+				setMouseKeyState( K_MOUSE1, ( b0 & 0x01 ) !== 0 );
+				setMouseKeyState( K_MOUSE2, ( b0 & 0x02 ) !== 0 );
+				setMouseKeyState( K_MOUSE3, ( b0 & 0x04 ) !== 0 );
+
+			}
+
+			remainder = offset < data.length ? data.slice( offset ) : Buffer.alloc( 0 );
+
+		}
+
+		function onOpen() {
+
+			rawMouseActive = true;
+			rawMouseErrorLogged = false;
+			log( 'Raw mouse active:', rawMouseDevice );
+
+		}
+
+		function onError( error ) {
+
+			rawMouseActive = false;
+			if ( rawMouseErrorLogged ) return;
+			rawMouseErrorLogged = true;
+			log( 'Raw mouse unavailable:', rawMouseDevice, error && error.message ? error.message : String( error ) );
+
+		}
+
+		function onClose() {
+
+			rawMouseActive = false;
+			remainder = Buffer.alloc( 0 );
+
+		}
+
+		try {
+
+			stream = createReadStream( rawMouseDevice, { flags: 'r' } );
+
+		} catch ( error ) {
+
+			onError( error );
+			return () => {};
+
+		}
+
+		stream.on( 'open', onOpen );
+		stream.on( 'data', onData );
+		stream.on( 'error', onError );
+		stream.on( 'close', onClose );
+
+		return () => {
+
+			if ( ! stream ) return;
+			stream.off( 'open', onOpen );
+			stream.off( 'data', onData );
+			stream.off( 'error', onError );
+			stream.off( 'close', onClose );
+			try {
+
+				stream.destroy();
+
+			} catch ( e ) { /* ignore */ }
+			stream = null;
+			rawMouseActive = false;
+
+		};
+
+	}
+
+	mouseCapture.onMouseDown = ( event ) => {
+
+		lastX = event.x;
+		lastY = event.y;
+		if ( rawMouseActive ) return;
+		const key = toQuakeMouseKey( event.button );
+		if ( key !== undefined ) {
+
+			if ( inputDebug ) log( 'Mouse down:', event.button, '->', key );
+			pressMouseKey( key );
+			event.preventDefault();
+
+		}
+
+	};
+
+	mouseCapture.onMouseUp = ( event ) => {
+
+		lastX = event.x;
+		lastY = event.y;
+		if ( rawMouseActive ) return;
+		const key = toQuakeMouseKey( event.button );
+		if ( key !== undefined ) {
+
+			if ( inputDebug ) log( 'Mouse up:', event.button, '->', key );
+			releaseMouseKey( key );
+			event.preventDefault();
+
+		}
+
+	};
+
+	mouseCapture.onMouseMove = ( event ) => {
+
+		applyLookDelta( event );
+
+	};
+
+	mouseCapture.onMouseDrag = ( event ) => {
+
+		applyLookDelta( event );
+
+	};
+
+	mouseCapture.onMouseScroll = ( event ) => {
+
+		if ( ! event.scroll ) return;
+
+		if ( inputDebug ) log( 'Mouse scroll:', event.scroll.direction, 'delta=', event.scroll.delta );
+		if ( event.scroll.direction === 'up' ) {
+
+			Key_Event( K_MWHEELUP, true );
+			Key_Event( K_MWHEELUP, false );
+			event.preventDefault();
+			return;
+
+		}
+
+		if ( event.scroll.direction === 'down' ) {
+
+			Key_Event( K_MWHEELDOWN, true );
+			Key_Event( K_MWHEELDOWN, false );
+			event.preventDefault();
+
+		}
+
+	};
+
+	mouseCapture.onMouseOut = () => {
+
+		lastX = null;
+		lastY = null;
+
+	};
+
+	rawMouseCleanup = setupRawMouseReader();
+
+	const onFocus = () => { rendererFocused = true; };
+	const onBlur = () => {
+
+		rendererFocused = false;
+		lastX = null;
+		lastY = null;
+
+	};
+	cliRenderer.on( 'focus', onFocus );
+	cliRenderer.on( 'blur', onBlur );
+
+	IN_TuiSetMouseActive( true );
+
+	function cleanup() {
+
+		IN_TuiSetMouseActive( false );
+		rawMouseCleanup();
+		rawMouseCleanup = () => {};
+		mouseCapture.onMouseDown = undefined;
+		mouseCapture.onMouseUp = undefined;
+		mouseCapture.onMouseMove = undefined;
+		mouseCapture.onMouseDrag = undefined;
+		mouseCapture.onMouseScroll = undefined;
+		mouseCapture.onMouseOut = undefined;
+		for ( const key of pressedMouseKeys ) Key_Event( key, false );
+			pressedMouseKeys.clear();
+			lastX = null;
+			lastY = null;
+			rawMouseActive = false;
+			rendererFocused = false;
+			cliRenderer.off( 'focus', onFocus );
+			cliRenderer.off( 'blur', onBlur );
+
+	}
+
 	cliRenderer.on( 'destroy', cleanup );
 
 }
@@ -607,6 +962,77 @@ function boostBufferExposure( buffer, gain = 1.0, gamma = 1.0 ) {
 		bg[ i ] = Math.min( 1, Math.pow( Math.max( 0, bg[ i ] * gain ), gamma ) );
 		bg[ i + 1 ] = Math.min( 1, Math.pow( Math.max( 0, bg[ i + 1 ] * gain ), gamma ) );
 		bg[ i + 2 ] = Math.min( 1, Math.pow( Math.max( 0, bg[ i + 2 ] * gain ), gamma ) );
+
+	}
+
+}
+
+const HALF_BLOCK_CODEPOINT = 0x2580;
+
+function compositeOverlayIntoBuffer( buffer ) {
+
+	const overlayCanvas = Draw_GetOverlayCanvas();
+	if ( ! overlayCanvas || ! overlayCanvas._pixels ) return;
+
+	const srcPixels = overlayCanvas._pixels;
+	const srcW = overlayCanvas.width | 0;
+	const srcH = overlayCanvas.height | 0;
+	if ( srcW <= 0 || srcH <= 0 ) return;
+
+	const dstW = buffer.width;
+	const dstH = buffer.height;
+	const fg = buffer.buffers.fg;
+	const bg = buffer.buffers.bg;
+	const chars = buffer.buffers.char;
+	const xScale = srcW / dstW;
+	const yScale = srcH / ( dstH * 2 );
+
+	for ( let y = 0; y < dstH; y ++ ) {
+
+		const srcTopY = Math.min( srcH - 1, Math.floor( ( y * 2 + 0.5 ) * yScale ) );
+		const srcBottomY = Math.min( srcH - 1, Math.floor( ( y * 2 + 1.5 ) * yScale ) );
+		const topRow = srcTopY * srcW * 4;
+		const bottomRow = srcBottomY * srcW * 4;
+		const dstRow = y * dstW * 4;
+
+		for ( let x = 0; x < dstW; x ++ ) {
+
+			const srcX = Math.min( srcW - 1, Math.floor( ( x + 0.5 ) * xScale ) );
+			const topIdx = topRow + srcX * 4;
+			const bottomIdx = bottomRow + srcX * 4;
+			const dstIdx = dstRow + x * 4;
+			const cellIdx = y * dstW + x;
+			let overlayApplied = false;
+
+			const topAlpha = srcPixels[ topIdx + 3 ] / 255;
+			if ( topAlpha > 0 ) {
+
+				const invTop = 1 - topAlpha;
+				fg[ dstIdx ] = fg[ dstIdx ] * invTop + ( srcPixels[ topIdx ] / 255 ) * topAlpha;
+				fg[ dstIdx + 1 ] = fg[ dstIdx + 1 ] * invTop + ( srcPixels[ topIdx + 1 ] / 255 ) * topAlpha;
+				fg[ dstIdx + 2 ] = fg[ dstIdx + 2 ] * invTop + ( srcPixels[ topIdx + 2 ] / 255 ) * topAlpha;
+				overlayApplied = true;
+
+			}
+
+			const bottomAlpha = srcPixels[ bottomIdx + 3 ] / 255;
+			if ( bottomAlpha > 0 ) {
+
+				const invBottom = 1 - bottomAlpha;
+				bg[ dstIdx ] = bg[ dstIdx ] * invBottom + ( srcPixels[ bottomIdx ] / 255 ) * bottomAlpha;
+				bg[ dstIdx + 1 ] = bg[ dstIdx + 1 ] * invBottom + ( srcPixels[ bottomIdx + 1 ] / 255 ) * bottomAlpha;
+				bg[ dstIdx + 2 ] = bg[ dstIdx + 2 ] * invBottom + ( srcPixels[ bottomIdx + 2 ] / 255 ) * bottomAlpha;
+				overlayApplied = true;
+
+			}
+
+			if ( overlayApplied && chars[ cellIdx ] === 32 ) {
+
+				chars[ cellIdx ] = HALF_BLOCK_CODEPOINT;
+
+			}
+
+		}
 
 	}
 

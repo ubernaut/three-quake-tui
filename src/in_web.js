@@ -594,6 +594,37 @@ export function IN_MouseMove() {
 
 /*
 ===========
+IN_TuiSetMouseActive
+
+Enable/disable mouse accumulation from TUI integrations.
+===========
+*/
+export function IN_TuiSetMouseActive( active ) {
+
+	if ( ! in_initialized ) return;
+	mouseactive = active === true;
+
+}
+
+/*
+===========
+IN_TuiInjectMouseDelta
+
+Inject relative mouse movement from terminal frontends.
+===========
+*/
+export function IN_TuiInjectMouseDelta( dx, dy ) {
+
+	if ( ! in_initialized ) return;
+
+	mouseactive = true;
+	mx_accum += Number.isFinite( dx ) ? dx : 0;
+	my_accum += Number.isFinite( dy ) ? dy : 0;
+
+}
+
+/*
+===========
 IN_Move
 
 Process all input movement for the current frame.
