@@ -166,6 +166,56 @@ export function VID_Init( palette ) {
 
 	}
 
+	// TUI mode: create a stub renderer (OpenTUI handles actual rendering)
+	if ( globalThis.__TUI_MODE ) {
+
+		vid.width = globalThis.__TUI_WIDTH || 320;
+		vid.height = globalThis.__TUI_HEIGHT || 240;
+		vid.aspect = vid.width / vid.height;
+		vid.rowbytes = vid.width;
+		vid.conwidth = vid.width;
+		vid.conheight = vid.height;
+
+		// Stub renderer - engine calls renderer.render() but it's a no-op.
+		// Actual rendering is done by OpenTUI's ThreeCliRenderer.
+		renderer = {
+			_isTuiStub: true,
+			render() {},
+			clear() {},
+			setSize() {},
+			setPixelRatio() {},
+			dispose() {},
+			setAnimationLoop() {},
+			outputColorSpace: '',
+			autoClear: false,
+			sortObjects: false,
+			toneMapping: 0,
+			toneMappingExposure: 1.0,
+			xr: {
+				enabled: false,
+				isPresenting: false,
+				addEventListener() {},
+				removeEventListener() {},
+				getSession() { return null; },
+				setReferenceSpaceType() {},
+				getController() {
+
+					return {
+						add() {},
+						position: { x: 0, y: 0, z: 0 },
+						quaternion: { x: 0, y: 0, z: 0, w: 1 },
+						matrixWorld: { elements: new Float32Array( 16 ) }
+					};
+
+				}
+			}
+		};
+
+		Con_Printf( 'TUI stub renderer initialized (' + vid.width + 'x' + vid.height + ')\n' );
+		return;
+
+	}
+
 	// create canvas element
 	canvas = document.createElement( 'canvas' );
 	canvas.width = window.innerWidth;

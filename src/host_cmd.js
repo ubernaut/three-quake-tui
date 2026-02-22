@@ -1148,6 +1148,15 @@ function Host_Loadgame_f() {
 
 function Host_Startdemos_f() {
 
+	// TUI mode always boots directly into gameplay instead of demo attract loops.
+	if ( globalThis.__TUI_MODE ) {
+
+		cls.demonum = - 1;
+		for ( let i = 0; i < MAX_DEMOS; i ++ ) cls.demos[ i ] = '';
+		return;
+
+	}
+
 	if ( cls.state === ca_dedicated ) {
 
 		if ( ! sv.active )
@@ -1183,6 +1192,14 @@ function Host_Startdemos_f() {
 }
 
 function Host_Demos_f() {
+
+	// In TUI mode, keep interactive gameplay active and ignore demo-loop requests.
+	if ( globalThis.__TUI_MODE ) {
+
+		cls.demonum = - 1;
+		return;
+
+	}
 
 	if ( cls.state === ca_dedicated )
 		return;

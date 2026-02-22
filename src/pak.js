@@ -211,6 +211,22 @@ export async function COM_PreloadLooseFile( filename, url ) {
 
 			}
 
+		} else if ( typeof Bun !== 'undefined' ) {
+
+			// Load from filesystem in Bun
+			try {
+
+				const file = Bun.file( url );
+				if ( ! await file.exists() ) return false;
+				const buffer = await file.arrayBuffer();
+				data = new Uint8Array( buffer );
+
+			} catch ( e ) {
+
+				return false;
+
+			}
+
 		} else {
 
 			// Browser: use fetch
@@ -340,6 +356,32 @@ export async function COM_FetchPak( url, filename, onProgress ) {
 			const data = await Deno.readFile( url );
 			if ( onProgress ) onProgress( 1 );
 			return COM_LoadPackFile( filename, data.buffer );
+
+		} catch ( e ) {
+
+			Con_Printf( 'Failed to load ' + url + ': ' + e.message + '\\n' );
+			return null;
+
+		}
+
+	}
+
+	// Check if running in Bun
+	if ( typeof Bun !== 'undefined' ) {
+
+		try {
+
+			const file = Bun.file( url );
+			if ( ! await file.exists() ) {
+
+				Con_Printf( 'File not found: ' + url + '\\n' );
+				return null;
+
+			}
+
+			const buffer = await file.arrayBuffer();
+			if ( onProgress ) onProgress( 1 );
+			return COM_LoadPackFile( filename, buffer );
 
 		} catch ( e ) {
 

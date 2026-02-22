@@ -572,13 +572,16 @@ const SHADEDOT_QUANT = 16;
 // Cached callbacks for viewmodel depthRange hack (no closures in render loop)
 function _viewmodelBeforeRender( r ) {
 
-	r.getContext().depthRange( 0, 0.3 );
+	// depthRange is WebGL-only; skip in TUI/WebGPU mode
+	const ctx = r.getContext && r.getContext();
+	if ( ctx && ctx.depthRange ) ctx.depthRange( 0, 0.3 );
 
 }
 
 function _viewmodelAfterRender( r ) {
 
-	r.getContext().depthRange( 0, 1 );
+	const ctx = r.getContext && r.getContext();
+	if ( ctx && ctx.depthRange ) ctx.depthRange( 0, 1 );
 
 }
 

@@ -1,6 +1,24 @@
-# three-quake
+# three-quake-tui
 
 A port of Quake to Three.js.
+
+### Terminal Mode (OpenTUI + Three.js)
+
+Run Quake directly in your terminal:
+
+```bash
+npm install
+npm start
+```
+
+`npm start` launches `tui.js` via Bun and renders the Three.js scene with OpenTUI's terminal renderer.
+Requires a machine/driver combo where Bun WebGPU is available.
+
+### Browser Mode
+
+```bash
+npm run browser
+```
 
 ### Play
 
