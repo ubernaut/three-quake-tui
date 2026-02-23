@@ -68,6 +68,7 @@ let particleTexture = null;
 
 const positionArray = new Float32Array( MAX_PARTICLES * 3 );
 const colorArray = new Float32Array( MAX_PARTICLES * 3 );
+const uvArray = new Float32Array( MAX_PARTICLES * 2 ); // WebGPU path may require uv when map is set
 
 let tracercount = 0;
 
@@ -795,6 +796,7 @@ export function R_DrawParticles() {
 		pointsGeometry = new THREE.BufferGeometry();
 		pointsGeometry.setAttribute( 'position', new THREE.BufferAttribute( positionArray, 3 ) );
 		pointsGeometry.setAttribute( 'color', new THREE.BufferAttribute( colorArray, 3 ) );
+		pointsGeometry.setAttribute( 'uv', new THREE.BufferAttribute( uvArray, 2 ) );
 
 		pointsMaterial = new THREE.PointsMaterial( {
 			size: 3, // Original Quake uses 1.5 world unit triangle (spans 1.5 in up + right)

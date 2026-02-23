@@ -7,8 +7,7 @@ function createQuakeLightmapMaterial( diffuseMap, lightmapTex ) {
 
 	lightmapTex.channel = 1; // Use uv1 for lightmap coordinates
 
-	// Use MeshLambertMaterial so surfaces respond to Three.js PointLights
-	// for dynamic lighting effects (explosions, muzzle flashes, etc.)
+	// Use Lambert for lower-cost lit shading.
 	const matOptions = {
 		map: diffuseMap,
 		lightMap: lightmapTex,
@@ -21,6 +20,24 @@ function createQuakeLightmapMaterial( diffuseMap, lightmapTex ) {
 	// darkens them to nothing. The fullbright texture contains only those pixels
 	// and is applied as an emissiveMap which bypasses all lighting.
 	if ( diffuseMap._fullbright != null ) {
+
+		matOptions.emissiveMap = diffuseMap._fullbright;
+		matOptions.emissive = new THREE.Color( 1, 1, 1 );
+
+	}
+
+	return new THREE.MeshLambertMaterial( matOptions );
+
+}
+
+function createQuakeDiffuseMaterial( diffuseMap ) {
+
+	const matOptions = {
+		map: diffuseMap || null
+	};
+
+	// Preserve fullbright behavior for non-lightmapped surfaces too.
+	if ( diffuseMap != null && diffuseMap._fullbright != null ) {
 
 		matOptions.emissiveMap = diffuseMap._fullbright;
 		matOptions.emissive = new THREE.Color( 1, 1, 1 );
@@ -251,7 +268,7 @@ function _getWaterMaterial( t, opacity ) {
 	let material = _waterMaterialCache.get( cacheKey );
 	if ( ! material ) {
 
-		material = new THREE.MeshBasicMaterial( {
+		material = new THREE.MeshLambertMaterial( {
 			map: ( t && t.gl_texture ) ? t.gl_texture : null,
 			color: ( t && t.gl_texture ) ? 0xffffff : 0x406080,
 			transparent: true,
@@ -1431,7 +1448,7 @@ export function R_DrawBrushModel( e ) {
 
 					material = ( diffuse != null && lmTex != null )
 						? createQuakeLightmapMaterial( diffuse, lmTex )
-						: new THREE.MeshBasicMaterial( { map: diffuse } );
+						: createQuakeDiffuseMaterial( diffuse );
 					_brushMaterialCache.set( matKey, material );
 
 				}
@@ -1487,7 +1504,7 @@ export function R_DrawBrushModel( e ) {
 
 				material = ( diffuse && anim.lmTex )
 					? createQuakeLightmapMaterial( diffuse, anim.lmTex )
-					: new THREE.MeshBasicMaterial( { map: diffuse } );
+					: createQuakeDiffuseMaterial( diffuse );
 				_brushMaterialCache.set( matKey, material );
 
 			}
@@ -2528,7 +2545,7 @@ function R_BuildWorldMeshes() {
 		const lmTex = lightmapTextures[ group.lmNum ];
 		const material = lmTex
 			? createQuakeLightmapMaterial( diffuse, lmTex )
-			: new THREE.MeshBasicMaterial( { map: diffuse } );
+			: createQuakeDiffuseMaterial( diffuse );
 
 		// Create BatchedMesh with capacity for all geometries in this group
 		const batchedMesh = new THREE.BatchedMesh(

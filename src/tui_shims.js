@@ -2,6 +2,7 @@
 // Must be imported BEFORE any engine modules
 
 import { spawn, spawnSync } from 'node:child_process';
+import { Worker as NodeWorker } from 'node:worker_threads';
 
 // Mark TUI mode globally
 globalThis.__TUI_MODE = true;
@@ -690,7 +691,21 @@ const windowShim = {
 	location: {
 		search: '',
 		href: '',
-		hostname: 'localhost'
+		hostname: 'localhost',
+		assign() {},
+		replace() {}
+	},
+
+	open() {
+
+		// TUI mode has no browser to open external links; return a minimal
+		// window handle so menu code can call this without throwing.
+		return {
+			closed: false,
+			focus() {},
+			close() { this.closed = true; }
+		};
+
 	},
 
 	requestAnimationFrame( fn ) {
@@ -712,10 +727,28 @@ const windowShim = {
 // ============================================================================
 
 const _tuiAudioDebug = process.env.QUAKE_TUI_AUDIO_DEBUG === '1';
+const _tuiAudioUseWorker = process.env.QUAKE_TUI_AUDIO_USE_WORKER !== '0';
 const _tuiAudioMaxProcessesEnv = Number.parseInt( process.env.QUAKE_TUI_AUDIO_MAX_PROCS || '24', 10 );
 const _tuiAudioMaxProcesses = Number.isFinite( _tuiAudioMaxProcessesEnv ) && _tuiAudioMaxProcessesEnv > 0
 	? _tuiAudioMaxProcessesEnv
 	: 24;
+const _tuiAudioMaxStartsPerWindowEnv = Number.parseInt( process.env.QUAKE_TUI_AUDIO_MAX_STARTS_PER_WINDOW || '6', 10 );
+const _tuiAudioStartWindowMsEnv = Number.parseInt( process.env.QUAKE_TUI_AUDIO_START_WINDOW_MS || '80', 10 );
+const _tuiAudioDedupMsEnv = Number.parseInt( process.env.QUAKE_TUI_AUDIO_DEDUP_MS || '35', 10 );
+const _tuiAudioAsyncLaunch = process.env.QUAKE_TUI_AUDIO_ASYNC_LAUNCH !== '0';
+const _tuiAudioChunkFramesEnv = Number.parseInt( process.env.QUAKE_TUI_AUDIO_CHUNK_FRAMES || '1024', 10 );
+const _tuiAudioMaxStartsPerWindow = Number.isFinite( _tuiAudioMaxStartsPerWindowEnv ) && _tuiAudioMaxStartsPerWindowEnv > 0
+	? _tuiAudioMaxStartsPerWindowEnv
+	: 6;
+const _tuiAudioStartWindowMs = Number.isFinite( _tuiAudioStartWindowMsEnv ) && _tuiAudioStartWindowMsEnv > 0
+	? _tuiAudioStartWindowMsEnv
+	: 80;
+const _tuiAudioDedupMs = Number.isFinite( _tuiAudioDedupMsEnv ) && _tuiAudioDedupMsEnv >= 0
+	? _tuiAudioDedupMsEnv
+	: 35;
+const _tuiAudioChunkFrames = Number.isFinite( _tuiAudioChunkFramesEnv ) && _tuiAudioChunkFramesEnv >= 128
+	? _tuiAudioChunkFramesEnv
+	: 1024;
 const _tuiAudioPipeMuteMs = 3000;
 const _tuiAudioPipeFailureWindowMs = 1200;
 const _tuiAudioPipeFailureThreshold = 8;
@@ -723,6 +756,10 @@ let _tuiAudioPipeFailureWindowStart = 0;
 let _tuiAudioPipeFailureCount = 0;
 let _tuiAudioMutedUntilMs = 0;
 let _tuiAudioMuteLogged = false;
+let _tuiAudioStartWindowStart = 0;
+let _tuiAudioStartsInWindow = 0;
+let _tuiAudioThrottleLogUntil = 0;
+const _tuiAudioRecentBufferStarts = new WeakMap();
 
 function _isBenignPipeError( err ) {
 
@@ -738,6 +775,59 @@ function _isBenignPipeError( err ) {
 function _isAudioTemporarilyMuted() {
 
 	return Date.now() < _tuiAudioMutedUntilMs;
+
+}
+
+function _logAudioThrottleOnce( reason ) {
+
+	if ( ! _tuiAudioDebug ) return;
+	const now = Date.now();
+	if ( now < _tuiAudioThrottleLogUntil ) return;
+	_tuiAudioThrottleLogUntil = now + 750;
+	console.error( '[quake-tui] audio throttled:', reason );
+
+}
+
+function _reserveAudioStart( buffer ) {
+
+	const now = Date.now();
+
+	if ( _tuiAudioDedupMs > 0 && buffer && typeof buffer === 'object' ) {
+
+		const prev = _tuiAudioRecentBufferStarts.get( buffer ) || 0;
+		if ( now - prev < _tuiAudioDedupMs ) {
+
+			_logAudioThrottleOnce( 'dedup' );
+			return false;
+
+		}
+
+	}
+
+	if ( _tuiAudioMaxStartsPerWindow > 0 ) {
+
+		if ( now - _tuiAudioStartWindowStart > _tuiAudioStartWindowMs ) {
+
+			_tuiAudioStartWindowStart = now;
+			_tuiAudioStartsInWindow = 0;
+
+		}
+
+		if ( _tuiAudioStartsInWindow >= _tuiAudioMaxStartsPerWindow ) {
+
+			_logAudioThrottleOnce( 'rate-limit' );
+			return false;
+
+		}
+
+		_tuiAudioStartsInWindow ++;
+
+	}
+
+	if ( _tuiAudioDedupMs > 0 && buffer && typeof buffer === 'object' )
+		_tuiAudioRecentBufferStarts.set( buffer, now );
+
+	return true;
 
 }
 
@@ -1101,11 +1191,21 @@ class AudioContextShim {
 		this.state = 'running';
 		this.destination = new DestinationNodeShim( this );
 		this._startTime = performance.now();
-		this._closed = false;
-		this._activeSources = new Set();
-		this._mediaElements = new Set();
+			this._closed = false;
+			this._activeSources = new Set();
+			this._mediaElements = new Set();
+			this._mixerProcess = null;
+			this._mixerBackpressured = false;
+			this._mixerTickTimer = null;
+			this._mixerChunkFrames = _tuiAudioChunkFrames;
+			this._mixerTickMs = Math.max( 5, Math.floor( this._mixerChunkFrames / this.sampleRate * 1000 ) );
+			this._workerAudio = null;
+			this._workerAudioReady = false;
+			this._workerAudioDisabled = ! _tuiAudioUseWorker;
+			this._workerAudioVoiceSeq = 1;
+			this._workerAudioVoiceMap = new Map();
 
-		if ( ! _audioBackend && ! _audioBackendWarned ) {
+			if ( ! _audioBackend && ! _audioBackendWarned ) {
 
 			_audioBackendWarned = true;
 			console.error( '[quake-tui] No audio backend found. Install ffplay or aplay.' );
@@ -1170,7 +1270,14 @@ class AudioContextShim {
 
 	resume() {
 
-		if ( ! this._closed ) this.state = 'running';
+			if ( ! this._closed ) {
+
+				this.state = 'running';
+				if ( this._workerAudio && ! this._workerAudioDisabled ) this._postAudioWorker( { type: 'resume' } );
+				if ( this._activeSources.size > 0 && ( this._workerAudioDisabled || ! this._workerAudio ) )
+					this._ensureMixerPump();
+
+		}
 		return Promise.resolve();
 
 	}
@@ -1188,6 +1295,8 @@ class AudioContextShim {
 			if ( mediaElement && mediaElement.pause ) mediaElement.pause();
 
 		}
+		if ( this._workerAudio && ! this._workerAudioDisabled ) this._postAudioWorker( { type: 'suspend' } );
+		this._stopMixerPump();
 
 		return Promise.resolve();
 
@@ -1207,6 +1316,10 @@ class AudioContextShim {
 			if ( mediaElement && mediaElement.pause ) mediaElement.pause();
 
 		}
+		if ( this._workerAudio && ! this._workerAudioDisabled ) this._postAudioWorker( { type: 'close' } );
+		this._terminateAudioWorker();
+		this._stopMixerPump();
+		this._stopMixerProcess();
 		this._activeSources.clear();
 		this._mediaElements.clear();
 		return Promise.resolve();
@@ -1220,29 +1333,12 @@ class AudioContextShim {
 		if ( ! _audioBackend ) return;
 		if ( _isAudioTemporarilyMuted() ) return;
 
-		const mix = this._resolveMix( source );
-		const interleaved = this._interleaveBuffer( source.buffer, mix.gain, mix.pan );
-
-		if ( interleaved.length === 0 ) return;
-
 		const delayMs = Number.isFinite( when ) && when > 0 ? Math.floor( when * 1000 ) : 0;
-		if ( delayMs > 0 ) {
-
-			source._delayTimer = setTimeout( () => {
-
-				source._delayTimer = null;
-				this._launchBufferSource( source, interleaved );
-
-			}, delayMs );
-			return;
-
-		}
-
-		this._launchBufferSource( source, interleaved );
+		this._scheduleBufferSourceLaunch( source, delayMs );
 
 	}
 
-	_stopBufferSource( source ) {
+	_scheduleBufferSourceLaunch( source, delayMs = 0 ) {
 
 		if ( ! source ) return;
 		if ( source._delayTimer ) {
@@ -1252,7 +1348,56 @@ class AudioContextShim {
 
 		}
 
-		if ( source._process ) {
+		const safeDelay = Number.isFinite( delayMs ) && delayMs > 0 ? Math.floor( delayMs ) : 0;
+		if ( safeDelay === 0 && _tuiAudioAsyncLaunch !== true ) {
+
+			this._prepareAndLaunchBufferSource( source );
+			return;
+
+		}
+
+		source._delayTimer = setTimeout( () => {
+
+			source._delayTimer = null;
+			this._prepareAndLaunchBufferSource( source );
+
+		}, safeDelay );
+
+	}
+
+		_prepareAndLaunchBufferSource( source ) {
+
+			if ( this._closed || this.state !== 'running' ) return false;
+			if ( ! source || source._stopped || ! source.buffer ) return false;
+			if ( ! _audioBackend ) return false;
+			if ( _isAudioTemporarilyMuted() ) return false;
+			if ( this._activeSources.size >= _tuiAudioMaxProcesses ) return false;
+			if ( ! _reserveAudioStart( source.buffer ) ) return false;
+
+			if ( this._queueBufferSourceToAudioWorker( source ) ) return true;
+			return this._queueBufferSourceToMixer( source );
+
+		}
+
+		_stopBufferSource( source ) {
+
+		if ( ! source ) return;
+			if ( source._delayTimer ) {
+
+			clearTimeout( source._delayTimer );
+			source._delayTimer = null;
+
+			}
+
+			if ( source._tuiWorkerVoiceId != null ) {
+
+				this._workerAudioVoiceMap.delete( source._tuiWorkerVoiceId );
+				if ( ! this._workerAudioDisabled ) this._postAudioWorker( { type: 'stop', id: source._tuiWorkerVoiceId } );
+				source._tuiWorkerVoiceId = null;
+
+			}
+
+				if ( source._process ) {
 
 			try {
 
@@ -1262,13 +1407,532 @@ class AudioContextShim {
 
 			source._process = null;
 
+			}
+
+				source._tuiVoice = null;
+				this._activeSources.delete( source );
+				if ( this._activeSources.size === 0 ) this._stopMixerPump();
+
+			}
+
+		_ensureAudioWorker() {
+
+			if ( this._workerAudioDisabled ) return false;
+			if ( ! _audioBackend ) return false;
+			if ( _isAudioTemporarilyMuted() ) return false;
+			if ( this._workerAudio && this._workerAudio.threadId > 0 ) return true;
+
+			let worker;
+			try {
+
+				worker = new NodeWorker( new URL( './tui_audio_worker.js', import.meta.url ), {
+					type: 'module'
+				} );
+
+			} catch ( error ) {
+
+				this._workerAudioDisabled = true;
+				if ( _tuiAudioDebug ) {
+
+					console.error( '[quake-tui] audio worker unavailable, falling back:', error && error.message ? error.message : String( error ) );
+
+				}
+				return false;
+
+			}
+
+			this._workerAudio = worker;
+			this._workerAudioReady = false;
+
+			worker.on( 'message', ( msg ) => {
+
+				if ( ! msg || typeof msg !== 'object' ) return;
+
+				if ( msg.type === 'ready' ) {
+
+					this._workerAudioReady = true;
+					return;
+
+				}
+
+				if ( msg.type === 'ended' ) {
+
+					const source = this._workerAudioVoiceMap.get( msg.id );
+					if ( ! source ) return;
+
+					this._workerAudioVoiceMap.delete( msg.id );
+					if ( source._tuiWorkerVoiceId === msg.id ) source._tuiWorkerVoiceId = null;
+					source._tuiVoice = null;
+					this._activeSources.delete( source );
+
+					if ( source._stopped || this._closed || this.state !== 'running' ) return;
+					source._emitEnded();
+					return;
+
+				}
+
+				if ( msg.type === 'debug' && _tuiAudioDebug && msg.message ) {
+
+					console.error( '[quake-tui] audio worker:', msg.message );
+					return;
+
+				}
+
+				if ( msg.type === 'pipe-error' ) {
+
+					_noteAudioPipeFailure();
+					return;
+
+				}
+
+			} );
+
+			worker.on( 'error', ( err ) => {
+
+				this._workerAudio = null;
+				this._workerAudioReady = false;
+				this._workerAudioDisabled = true;
+				if ( _tuiAudioDebug ) {
+
+					console.error( '[quake-tui] audio worker error, disabling worker path:', err && err.message ? err.message : String( err ) );
+
+				}
+
+			} );
+
+			worker.on( 'exit', () => {
+
+				this._workerAudio = null;
+				this._workerAudioReady = false;
+
+			} );
+
+			this._postAudioWorker( {
+				type: 'init',
+				sampleRate: this.sampleRate,
+				chunkFrames: this._mixerChunkFrames,
+				audioBackend: _audioBackend,
+				audioDebug: _tuiAudioDebug
+			} );
+
+			return true;
+
 		}
 
-		this._activeSources.delete( source );
+		_postAudioWorker( message, transferList ) {
 
-	}
+			const worker = this._workerAudio;
+			if ( ! worker ) return false;
+			try {
 
-	_launchBufferSource( source, interleaved ) {
+				if ( Array.isArray( transferList ) && transferList.length > 0 ) {
+
+					worker.postMessage( message, transferList );
+
+				} else {
+
+					worker.postMessage( message );
+
+				}
+
+				return true;
+
+			} catch ( e ) {
+
+				if ( _tuiAudioDebug ) {
+
+					console.error( '[quake-tui] audio worker postMessage failed:', e && e.message ? e.message : String( e ) );
+
+				}
+				return false;
+
+			}
+
+		}
+
+		_terminateAudioWorker() {
+
+			const worker = this._workerAudio;
+			this._workerAudio = null;
+			this._workerAudioReady = false;
+			this._workerAudioVoiceMap.clear();
+			if ( ! worker ) return;
+			try {
+
+				worker.terminate();
+
+			} catch ( e ) { /* ignore */ }
+
+		}
+
+		_queueBufferSourceToAudioWorker( source ) {
+
+			if ( this._workerAudioDisabled ) return false;
+			if ( ! this._ensureAudioWorker() ) return false;
+			if ( ! source || ! source.buffer ) return false;
+
+			const mix = this._resolveMix( source );
+			const interleaved = this._interleaveBuffer( source.buffer, mix.gain, mix.pan );
+			if ( interleaved.length === 0 ) return false;
+
+			const voiceId = this._workerAudioVoiceSeq ++;
+			source._tuiWorkerVoiceId = voiceId;
+			source._process = null;
+			source._tuiVoice = null;
+			this._activeSources.add( source );
+			this._workerAudioVoiceMap.set( voiceId, source );
+
+			const playbackRate = source.playbackRate && Number.isFinite( source.playbackRate.value ) && source.playbackRate.value > 0
+				? source.playbackRate.value
+				: 1;
+
+			const ok = this._postAudioWorker(
+				{
+					type: 'play',
+					id: voiceId,
+					loop: !! source.loop,
+					sampleRate: Math.max( 1, ( source.buffer.sampleRate | 0 ) || this.sampleRate ),
+					playbackRate,
+					pcm: interleaved.buffer
+				},
+				[ interleaved.buffer ]
+			);
+
+			if ( ! ok ) {
+
+				this._workerAudioVoiceMap.delete( voiceId );
+				if ( source._tuiWorkerVoiceId === voiceId ) source._tuiWorkerVoiceId = null;
+				this._activeSources.delete( source );
+				return false;
+
+			}
+
+			return true;
+
+		}
+
+		_queueBufferSourceToMixer( source ) {
+
+			if ( ! source || ! source.buffer ) return false;
+			const buffer = source.buffer;
+			const totalFrames = buffer.length | 0;
+			if ( totalFrames <= 0 ) return false;
+
+			const mix = this._resolveMix( source );
+			const clampedPan = Math.max( - 1, Math.min( 1, mix.pan ) );
+			const leftGain = mix.gain * ( clampedPan <= 0 ? 1 : 1 - clampedPan );
+			const rightGain = mix.gain * ( clampedPan >= 0 ? 1 : 1 + clampedPan );
+			const sourceSampleRate = Math.max( 1, ( buffer.sampleRate | 0 ) || this.sampleRate );
+			const playbackRate = source.playbackRate && Number.isFinite( source.playbackRate.value ) && source.playbackRate.value > 0
+				? source.playbackRate.value
+				: 1;
+
+			source._tuiVoice = {
+				left: buffer.getChannelData( 0 ),
+				right: buffer.numberOfChannels > 1 ? buffer.getChannelData( 1 ) : buffer.getChannelData( 0 ),
+				totalFrames,
+				sourceSampleRate,
+				playbackRate,
+				leftGain,
+				rightGain,
+				startTime: this.currentTime,
+				loop: !! source.loop
+			};
+
+			source._process = null;
+			this._activeSources.add( source );
+
+			if ( ! this._ensureMixerProcess() ) {
+
+				source._tuiVoice = null;
+				this._activeSources.delete( source );
+				return false;
+
+			}
+
+			this._ensureMixerPump();
+			return true;
+
+		}
+
+		_ensureMixerProcess() {
+
+			if ( this._mixerProcess && ! this._mixerProcess.killed ) return true;
+			if ( ! _audioBackend ) return false;
+			if ( _isAudioTemporarilyMuted() ) return false;
+
+			let proc = null;
+			try {
+
+				proc = _spawnRawAudioProcess( this.sampleRate, 2 );
+
+			} catch ( e ) {
+
+				proc = null;
+
+			}
+
+			if ( ! proc ) return false;
+
+			this._mixerProcess = proc;
+			this._mixerBackpressured = false;
+
+			const onProcessError = ( err ) => {
+
+				if ( ! err ) return;
+
+				if ( _isBenignPipeError( err ) ) {
+
+					_noteAudioPipeFailure();
+					if ( proc.stdin && ! proc.stdin.destroyed ) {
+
+						try {
+
+							proc.stdin.destroy();
+
+						} catch ( e ) { /* ignore */ }
+
+					}
+					return;
+
+				}
+
+				if ( _tuiAudioDebug ) {
+
+					console.error( '[quake-tui] audio mixer process error:', err.message || String( err ) );
+
+				}
+
+			};
+
+			proc.on( 'error', onProcessError );
+			proc.on( 'exit', () => {
+
+				if ( this._mixerProcess !== proc ) return;
+				this._mixerProcess = null;
+				this._mixerBackpressured = false;
+				if ( this._closed || this.state !== 'running' ) return;
+				if ( this._activeSources.size > 0 ) this._ensureMixerProcess();
+
+			} );
+
+			if ( proc.stdin ) {
+
+				if ( typeof proc.stdin.on === 'function' ) {
+
+					proc.stdin.on( 'error', onProcessError );
+					proc.stdin.on( 'drain', () => {
+
+						if ( this._mixerProcess === proc ) this._mixerBackpressured = false;
+
+					} );
+
+				}
+
+			}
+
+			return true;
+
+		}
+
+		_stopMixerProcess() {
+
+			const proc = this._mixerProcess;
+			this._mixerProcess = null;
+			this._mixerBackpressured = false;
+			if ( ! proc ) return;
+
+			try {
+
+				if ( proc.stdin && proc.stdin.writable && ! proc.stdin.destroyed ) proc.stdin.end();
+
+			} catch ( e ) { /* ignore */ }
+
+			try {
+
+				proc.kill( 'SIGTERM' );
+
+			} catch ( e ) { /* ignore */ }
+
+		}
+
+		_ensureMixerPump() {
+
+			if ( this._mixerTickTimer != null ) return;
+			if ( this._closed || this.state !== 'running' ) return;
+
+			this._mixerTickTimer = setInterval( () => {
+
+				this._mixerTick();
+
+			}, this._mixerTickMs );
+
+			if ( this._mixerTickTimer && typeof this._mixerTickTimer.unref === 'function' )
+				this._mixerTickTimer.unref();
+
+		}
+
+		_stopMixerPump() {
+
+			if ( this._mixerTickTimer == null ) return;
+			clearInterval( this._mixerTickTimer );
+			this._mixerTickTimer = null;
+
+		}
+
+		_mixerTick() {
+
+			if ( this._closed || this.state !== 'running' ) return;
+			if ( this._activeSources.size === 0 ) {
+
+				this._stopMixerPump();
+				return;
+
+			}
+
+			if ( _isAudioTemporarilyMuted() ) return;
+			if ( this._mixerBackpressured ) return;
+			if ( ! this._ensureMixerProcess() ) return;
+
+			const proc = this._mixerProcess;
+			if ( ! proc || ! proc.stdin || ! proc.stdin.writable || proc.stdin.destroyed ) return;
+
+			const outFrames = this._mixerChunkFrames;
+			const outRate = this.sampleRate;
+			const out = new Float32Array( outFrames * 2 );
+			const chunkStartTime = this.currentTime;
+
+			for ( const source of Array.from( this._activeSources ) ) {
+
+				if ( ! source || source._stopped ) {
+
+					if ( source ) source._tuiVoice = null;
+					this._activeSources.delete( source );
+					continue;
+
+				}
+
+				const voice = source._tuiVoice;
+				if ( ! voice ) {
+
+					this._activeSources.delete( source );
+					continue;
+
+				}
+
+				const finished = this._mixVoiceIntoChunk( voice, out, chunkStartTime, outRate, outFrames );
+				if ( finished && voice.loop !== true ) {
+
+					source._tuiVoice = null;
+					this._activeSources.delete( source );
+					source._emitEnded();
+
+				}
+
+			}
+
+			if ( this._activeSources.size === 0 ) {
+
+				this._stopMixerPump();
+				return;
+
+			}
+
+			for ( let i = 0; i < out.length; i ++ ) out[ i ] = _clampAudioSample( out[ i ] );
+
+			const payload = _encodeAudioPayload( out );
+			if ( payload.length === 0 ) return;
+
+			try {
+
+				const writeOk = proc.stdin.write( payload );
+				if ( writeOk === false ) this._mixerBackpressured = true;
+
+			} catch ( err ) {
+
+				if ( _isBenignPipeError( err ) ) {
+
+					_noteAudioPipeFailure();
+					this._mixerBackpressured = false;
+					try {
+
+						if ( proc.stdin && ! proc.stdin.destroyed ) proc.stdin.destroy();
+
+					} catch ( e ) { /* ignore */ }
+
+				} else if ( _tuiAudioDebug ) {
+
+					console.error( '[quake-tui] audio mixer write error:', err.message || String( err ) );
+
+				}
+
+			}
+
+		}
+
+		_mixVoiceIntoChunk( voice, out, chunkStartTime, outRate, outFrames ) {
+
+			if ( ! voice || ! voice.left || ! voice.right ) return true;
+			const totalFrames = voice.totalFrames | 0;
+			if ( totalFrames <= 0 ) return true;
+
+			const playbackRate = voice.playbackRate > 0 ? voice.playbackRate : 1;
+			const rateStep = ( voice.sourceSampleRate / outRate ) * playbackRate;
+			if ( ! Number.isFinite( rateStep ) || rateStep <= 0 ) return true;
+
+			let srcPos = ( chunkStartTime - voice.startTime ) * voice.sourceSampleRate * playbackRate;
+			if ( ! Number.isFinite( srcPos ) ) srcPos = 0;
+
+			const left = voice.left;
+			const right = voice.right;
+			let finished = false;
+
+			for ( let i = 0; i < outFrames; i ++, srcPos += rateStep ) {
+
+				if ( srcPos < 0 ) continue;
+
+				let pos = srcPos;
+				if ( voice.loop === true ) {
+
+					pos %= totalFrames;
+					if ( pos < 0 ) pos += totalFrames;
+
+				} else if ( pos >= totalFrames ) {
+
+					finished = true;
+					break;
+
+				}
+
+				const idx0 = pos | 0;
+				const idx1 = idx0 + 1 < totalFrames ? idx0 + 1 : ( voice.loop === true ? 0 : idx0 );
+				const frac = pos - idx0;
+
+				const l0 = left[ idx0 ] || 0;
+				const l1 = left[ idx1 ] || 0;
+				const r0 = right[ idx0 ] || 0;
+				const r1 = right[ idx1 ] || 0;
+				const mixedL = l0 + ( l1 - l0 ) * frac;
+				const mixedR = r0 + ( r1 - r0 ) * frac;
+				const outIdx = i * 2;
+
+				out[ outIdx ] += mixedL * voice.leftGain;
+				out[ outIdx + 1 ] += mixedR * voice.rightGain;
+
+			}
+
+			if ( voice.loop !== true && finished !== true ) {
+
+				const chunkEndPos = srcPos;
+				if ( chunkEndPos >= totalFrames ) finished = true;
+
+			}
+
+			return finished;
+
+		}
+
+		_launchBufferSource( source, interleaved ) {
 
 		if ( source._stopped || this._closed || this.state !== 'running' ) return false;
 		if ( _isAudioTemporarilyMuted() ) return false;
@@ -1641,6 +2305,8 @@ const windowGlobal = globalThis.window || windowShim;
 if ( typeof windowGlobal.Audio === 'undefined' ) windowGlobal.Audio = AudioElementShim;
 if ( typeof windowGlobal.AudioContext === 'undefined' ) windowGlobal.AudioContext = AudioContextShim;
 if ( typeof windowGlobal.webkitAudioContext === 'undefined' ) windowGlobal.webkitAudioContext = AudioContextShim;
+if ( typeof windowGlobal.open !== 'function' ) windowGlobal.open = windowShim.open.bind( windowShim );
+if ( typeof globalThis.open !== 'function' ) globalThis.open = windowGlobal.open.bind( windowGlobal );
 
 // Export for use in tui.js
 export { documentShim, windowShim, _globalListeners };

@@ -914,6 +914,18 @@ const _sprite_v_forward = new Float32Array( 3 );
 const _sprite_v_right = new Float32Array( 3 );
 const _sprite_v_up = new Float32Array( 3 );
 
+function _createSpriteLambertMaterial( texture ) {
+
+	return new THREE.MeshLambertMaterial( {
+		map: texture,
+		transparent: true,
+		alphaTest: 0.5,
+		depthWrite: false,
+		side: THREE.DoubleSide
+	} );
+
+}
+
 function R_DrawSpriteModel( e ) {
 
 	if ( e == null || e.model == null ) return;
@@ -934,10 +946,12 @@ function R_DrawSpriteModel( e ) {
 
 		// First time: create geometry with pre-allocated buffers
 		positions = new Float32Array( 12 ); // 4 vertices * 3
+		const normals = new Float32Array( 12 ); // 4 vertices * 3
 		const uvs = new Float32Array( [ 0, 1, 1, 1, 1, 0, 0, 0 ] );
 
 		const geometry = new THREE.BufferGeometry();
 		geometry.setAttribute( 'position', new THREE.BufferAttribute( positions, 3 ) );
+		geometry.setAttribute( 'normal', new THREE.BufferAttribute( normals, 3 ) );
 		geometry.setAttribute( 'uv', new THREE.BufferAttribute( uvs, 2 ) );
 		geometry.setIndex( [ 0, 1, 2, 0, 2, 3 ] );
 
@@ -945,13 +959,7 @@ function R_DrawSpriteModel( e ) {
 		let material = _spriteMaterialCache.get( texture );
 		if ( ! material ) {
 
-			material = new THREE.MeshBasicMaterial( {
-				map: texture,
-				transparent: true,
-				alphaTest: 0.5,
-				depthWrite: false,
-				side: THREE.DoubleSide
-			} );
+			material = _createSpriteLambertMaterial( texture );
 			_spriteMaterialCache.set( texture, material );
 
 		}
@@ -965,13 +973,7 @@ function R_DrawSpriteModel( e ) {
 		let material = _spriteMaterialCache.get( texture );
 		if ( ! material ) {
 
-			material = new THREE.MeshBasicMaterial( {
-				map: texture,
-				transparent: true,
-				alphaTest: 0.5,
-				depthWrite: false,
-				side: THREE.DoubleSide
-			} );
+			material = _createSpriteLambertMaterial( texture );
 			_spriteMaterialCache.set( texture, material );
 
 		}
@@ -1024,7 +1026,23 @@ function R_DrawSpriteModel( e ) {
 	positions[ 10 ] = oy + uy * u + ry * l;
 	positions[ 11 ] = oz + uz * u + rz * l;
 
+	const nx = ry * uz - rz * uy;
+	const ny = rz * ux - rx * uz;
+	const nz = rx * uy - ry * ux;
+	const nlen = Math.hypot( nx, ny, nz ) || 1;
+	const nnx = nx / nlen;
+	const nny = ny / nlen;
+	const nnz = nz / nlen;
+
+	const normalAttr = mesh.geometry.attributes.normal;
+	const normals = normalAttr.array;
+	normals[ 0 ] = nnx; normals[ 1 ] = nny; normals[ 2 ] = nnz;
+	normals[ 3 ] = nnx; normals[ 4 ] = nny; normals[ 5 ] = nnz;
+	normals[ 6 ] = nnx; normals[ 7 ] = nny; normals[ 8 ] = nnz;
+	normals[ 9 ] = nnx; normals[ 10 ] = nny; normals[ 11 ] = nnz;
+
 	posAttr.needsUpdate = true;
+	normalAttr.needsUpdate = true;
 
 	if ( scene ) {
 

@@ -19,6 +19,13 @@ import { appendFileSync, writeFileSync, createReadStream } from 'node:fs';
 const LOG_FILE = '/tmp/quake-tui.log';
 writeFileSync( LOG_FILE, '' );
 const runtimeDebug = process.env.QUAKE_TUI_DEBUG === '1' || process.env.QUAKE_TUI_INPUT_DEBUG === '1';
+const perfDebug = process.env.QUAKE_TUI_PERF_DEBUG === '1';
+const perfSpikeThresholdMsRaw = Number.parseFloat( process.env.QUAKE_TUI_PERF_SPIKE_MS || '45' );
+const perfSpikeThresholdMs = Number.isFinite( perfSpikeThresholdMsRaw ) && perfSpikeThresholdMsRaw > 0
+	? perfSpikeThresholdMsRaw
+	: 45;
+let _uvSanitizeRequested = true;
+let _precompilePassSerial = 0;
 
 function log( ...args ) {
 
@@ -92,6 +99,7 @@ function installConsoleNoiseFilters() {
 		const msg = args.map( a => String( a ) ).join( ' ' );
 		if ( msg.includes( 'AttributeNode: Vertex attribute "uv" not found on geometry.' ) ) {
 
+			_uvSanitizeRequested = true;
 			uvWarningSuppressed ++;
 			if ( uvWarningSuppressed === 1 )
 				log( 'Suppressing repeated Three.js uv warnings' );
@@ -122,6 +130,161 @@ function installConsoleNoiseFilters() {
 }
 
 installConsoleNoiseFilters();
+
+async function precompileCurrentMapScene( threeCliRenderer, rootScene, activeCamera, options = {} ) {
+
+	if ( !threeCliRenderer || !rootScene || !activeCamera ) return false;
+
+	const renderer = threeCliRenderer.threeRenderer;
+	if ( !renderer || typeof renderer.compileAsync !== 'function' ) {
+
+		log( 'Precompile skipped: Three.js compileAsync unavailable' );
+		return false;
+
+	}
+
+	const precompileTextures = options.precompileTextures !== false;
+	const forceVisible = options.forceVisible === true;
+	const warmRender = options.warmRender === true;
+	const passId = ++ _precompilePassSerial;
+	const t0 = performance.now();
+
+	const renderables = [];
+	const allObjects = [];
+	const frustumStates = [];
+	const visibleStates = [];
+	const materials = new Set();
+	const textures = new Set();
+
+	rootScene.traverse( ( obj ) => {
+
+		allObjects.push( obj );
+		if ( forceVisible ) {
+
+			visibleStates.push( [ obj, obj.visible ] );
+			obj.visible = true;
+
+		}
+
+		if ( obj.isMesh || obj.isSprite || obj.isPoints || obj.isLine ) {
+
+			renderables.push( obj );
+			frustumStates.push( [ obj, obj.frustumCulled ] );
+			obj.frustumCulled = false;
+
+			const material = obj.material;
+			if ( Array.isArray( material ) ) {
+
+				for ( const m of material ) if ( m ) materials.add( m );
+
+			} else if ( material ) {
+
+				materials.add( material );
+
+			}
+
+		}
+
+	} );
+
+	const collectTexture = ( tex ) => {
+
+		if ( tex && tex.isTexture ) textures.add( tex );
+
+	};
+
+	for ( const material of materials ) {
+
+		for ( const key of Object.keys( material ) ) {
+
+			collectTexture( material[ key ] );
+
+		}
+
+	}
+
+	let textureMs = 0;
+	let compileMs = 0;
+	let warmRenderMs = 0;
+	let textureCount = 0;
+	let materialCount = materials.size;
+
+	try {
+
+		if ( precompileTextures && typeof renderer.initTextureAsync === 'function' && textures.size > 0 ) {
+
+			const textureStart = performance.now();
+			for ( const texture of textures ) {
+
+				try {
+
+					await renderer.initTextureAsync( texture );
+					textureCount ++;
+
+				} catch ( e ) {
+
+					log( 'Precompile texture init failed:', e.message || String( e ) );
+
+				}
+
+			}
+			textureMs = performance.now() - textureStart;
+
+		}
+
+		const compileStart = performance.now();
+		await renderer.compileAsync( rootScene, activeCamera );
+		compileMs = performance.now() - compileStart;
+
+		if ( warmRender ) {
+
+			// Optional: force remaining lazy setup outside gameplay.
+			const warmRenderStart = performance.now();
+			await renderer.render( rootScene, activeCamera );
+			warmRenderMs = performance.now() - warmRenderStart;
+
+		}
+
+		log(
+			'Precompile',
+			`pass=${passId}`,
+			'ok',
+			`renderables=${renderables.length}`,
+			`objects=${allObjects.length}`,
+			`materials=${materialCount}`,
+			`textures=${textureCount}/${textures.size}`,
+			`texturesMs=${textureMs.toFixed( 1 )}ms`,
+			`compileMs=${compileMs.toFixed( 1 )}ms`,
+			`warmRenderMs=${warmRenderMs.toFixed( 1 )}ms`,
+			`total=${( performance.now() - t0 ).toFixed( 1 )}ms`,
+			`forceVisible=${forceVisible ? 1 : 0}`,
+			`warmRender=${warmRender ? 1 : 0}`
+		);
+		return true;
+
+	} catch ( e ) {
+
+		log(
+			'Precompile',
+			`pass=${passId}`,
+			'FAILED',
+			e.message || String( e ),
+			e.stack || ''
+		);
+		return false;
+
+	} finally {
+
+		for ( const [ obj, original ] of frustumStates ) obj.frustumCulled = original;
+		if ( forceVisible ) {
+
+			for ( const [ obj, original ] of visibleStates ) obj.visible = original;
+
+		}
+
+	}
+
+}
 
 // ============================================================================
 // 3. Import OpenTUI
@@ -157,7 +320,7 @@ import { cls, cl, SIGNONS } from './src/client.js';
 import { in_forward, in_back, in_moveleft, in_moveright } from './src/cl_input.js';
 import { IN_TuiInjectMouseDelta, IN_TuiSetMouseActive } from './src/in_web.js';
 import { M_TouchInput } from './src/menu.js';
-import { VID_TuiResize } from './src/vid.js';
+import { VID_TuiResize, renderer as vidRenderer } from './src/vid.js';
 
 // ============================================================================
 // Main
@@ -176,19 +339,19 @@ async function main() {
 		// Load game data from filesystem
 		// ----------------------------------------------------------------
 
-			log( 'Loading pak0.pak...' );
-			const pak0 = await COM_FetchPak( 'pak0.pak', 'pak0.pak', () => {} );
+		log( 'Loading pak0.pak...' );
+		const pak0 = await COM_FetchPak( 'pak0.pak', 'pak0.pak', () => {} );
 
-			if ( pak0 ) {
+		if ( pak0 ) {
 
-				COM_AddPack( pak0 );
-				log( 'pak0.pak loaded successfully' );
+			COM_AddPack( pak0 );
+			log( 'pak0.pak loaded successfully' );
 
-			} else {
+		} else {
 
-				console.error( 'pak0.pak not found - place the Quake shareware pak0.pak in the project root' );
-				emergencyTerminalReset( 'missing-pak0' );
-				process.exit( 1 );
+			console.error( 'pak0.pak not found - place the Quake shareware pak0.pak in the project root' );
+			emergencyTerminalReset( 'missing-pak0' );
+			process.exit( 1 );
 
 		}
 
@@ -201,13 +364,27 @@ async function main() {
 		// Initialize Quake engine
 		// ----------------------------------------------------------------
 
-		globalThis.__TUI_WIDTH = 320;
-		globalThis.__TUI_HEIGHT = 240;
+			globalThis.__TUI_WIDTH = 320;
+			globalThis.__TUI_HEIGHT = 240;
 
 		log( 'Calling Host_Init...' );
 		await Host_Init( { basedir: '.', argc: 0, argv: [] } );
 		log( 'Host_Init complete' );
 		if ( runtimeDebug ) installSignonTrace();
+
+		const disableDynamicLights = process.env.QUAKE_TUI_DYNAMIC_LIGHTS !== '1';
+		const disableFlashBlend = process.env.QUAKE_TUI_FLASHBLEND !== '1';
+		if ( disableDynamicLights ) Cbuf_AddText( 'r_dynamic 0\n' );
+		if ( disableFlashBlend ) Cbuf_AddText( 'gl_flashblend 0\n' );
+		if ( disableDynamicLights || disableFlashBlend ) {
+
+			log(
+				'TUI perf defaults:',
+				`r_dynamic=${disableDynamicLights ? 0 : 1}`,
+				`gl_flashblend=${disableFlashBlend ? 0 : 1}`
+			);
+
+		}
 
 		Cbuf_AddText( 'map start\n' );
 		for ( let i = 0; i < 10; i ++ ) {
@@ -225,8 +402,13 @@ async function main() {
 		// Add fill lighting for WebGPU rendering (Quake materials are very dark otherwise).
 		if ( scene ) {
 
-			scene.add( new THREE.AmbientLight( 0xffffff, 3.5 ) );
-			const fillLight = new THREE.DirectionalLight( 0xffffff, 1.25 );
+			const ambientRaw = Number.parseFloat( process.env.QUAKE_TUI_AMBIENT_LIGHT || '2.6' );
+			const directionalRaw = Number.parseFloat( process.env.QUAKE_TUI_DIRECTIONAL_LIGHT || '0.95' );
+			const ambientIntensity = Number.isFinite( ambientRaw ) ? ambientRaw : 2.6;
+			const directionalIntensity = Number.isFinite( directionalRaw ) ? directionalRaw : 0.95;
+
+			scene.add( new THREE.AmbientLight( 0xffffff, ambientIntensity ) );
+			const fillLight = new THREE.DirectionalLight( 0xffffff, directionalIntensity );
 			fillLight.position.set( 0.25, 1, 0.5 );
 			scene.add( fillLight );
 
@@ -253,16 +435,16 @@ async function main() {
 			}
 		} );
 
-		const minRenderWidthRaw = Number.parseInt( process.env.QUAKE_TUI_MIN_RENDER_WIDTH || '320', 10 );
-		const minRenderHeightRaw = Number.parseInt( process.env.QUAKE_TUI_MIN_RENDER_HEIGHT || '240', 10 );
-		const maxRenderWidthRaw = Number.parseInt( process.env.QUAKE_TUI_MAX_RENDER_WIDTH || '1024', 10 );
-		const maxRenderHeightRaw = Number.parseInt( process.env.QUAKE_TUI_MAX_RENDER_HEIGHT || '768', 10 );
+			const minRenderWidthRaw = Number.parseInt( process.env.QUAKE_TUI_MIN_RENDER_WIDTH || '320', 10 );
+			const minRenderHeightRaw = Number.parseInt( process.env.QUAKE_TUI_MIN_RENDER_HEIGHT || '240', 10 );
+			const maxRenderWidthRaw = Number.parseInt( process.env.QUAKE_TUI_MAX_RENDER_WIDTH || '1024', 10 );
+			const maxRenderHeightRaw = Number.parseInt( process.env.QUAKE_TUI_MAX_RENDER_HEIGHT || '768', 10 );
 		const renderScaleRaw = Number.parseFloat( process.env.QUAKE_TUI_RENDER_SCALE || '1' );
 
-		const minRenderWidth = Number.isFinite( minRenderWidthRaw ) && minRenderWidthRaw > 0 ? minRenderWidthRaw : 320;
-		const minRenderHeight = Number.isFinite( minRenderHeightRaw ) && minRenderHeightRaw > 0 ? minRenderHeightRaw : 240;
-		const maxRenderWidthCandidate = Number.isFinite( maxRenderWidthRaw ) && maxRenderWidthRaw > 0 ? maxRenderWidthRaw : 1024;
-		const maxRenderHeightCandidate = Number.isFinite( maxRenderHeightRaw ) && maxRenderHeightRaw > 0 ? maxRenderHeightRaw : 768;
+			const minRenderWidth = Number.isFinite( minRenderWidthRaw ) && minRenderWidthRaw > 0 ? minRenderWidthRaw : 320;
+			const minRenderHeight = Number.isFinite( minRenderHeightRaw ) && minRenderHeightRaw > 0 ? minRenderHeightRaw : 240;
+			const maxRenderWidthCandidate = Number.isFinite( maxRenderWidthRaw ) && maxRenderWidthRaw > 0 ? maxRenderWidthRaw : 1024;
+			const maxRenderHeightCandidate = Number.isFinite( maxRenderHeightRaw ) && maxRenderHeightRaw > 0 ? maxRenderHeightRaw : 768;
 		const maxRenderWidth = Math.max( minRenderWidth, maxRenderWidthCandidate );
 		const maxRenderHeight = Math.max( minRenderHeight, maxRenderHeightCandidate );
 		const renderScale = Number.isFinite( renderScaleRaw ) && renderScaleRaw > 0 ? renderScaleRaw : 1;
@@ -272,13 +454,13 @@ async function main() {
 		const maxRenderCellsW = Math.max( minRenderCellsW, Math.floor( maxRenderWidth / 2 ) );
 		const maxRenderCellsH = Math.max( minRenderCellsH, Math.floor( maxRenderHeight / 2 ) );
 
-		const computeRenderSize = ( termW, termH ) => {
+			const computeRenderSize = ( termW, termH ) => {
 
-			const scaledW = Math.max( 1, Math.floor( termW * renderScale ) );
-			const scaledH = Math.max( 1, Math.floor( termH * renderScale ) );
-			const renderW = clampInt( scaledW, minRenderCellsW, maxRenderCellsW );
-			const renderH = clampInt( scaledH, minRenderCellsH, maxRenderCellsH );
-			return { renderW, renderH };
+				const scaledW = Math.max( 1, Math.floor( termW * renderScale ) );
+				const scaledH = Math.max( 1, Math.floor( termH * renderScale ) );
+				const renderW = clampInt( scaledW, minRenderCellsW, maxRenderCellsW );
+				const renderH = clampInt( scaledH, minRenderCellsH, maxRenderCellsH );
+				return { renderW, renderH };
 
 		};
 
@@ -305,10 +487,15 @@ async function main() {
 		);
 
 		log( 'Creating ThreeCliRenderer...' );
+		const superSampleModeEnv = String( process.env.QUAKE_TUI_SUPERSAMPLE || 'none' ).toLowerCase();
+		const superSampleMode = superSampleModeEnv === 'gpu' || superSampleModeEnv === 'cpu' || superSampleModeEnv === 'none'
+			? superSampleModeEnv
+			: 'none';
 		const threeRenderer = new ThreeCliRenderer( cliRenderer, {
 			width: renderW,
 			height: renderH,
 			backgroundColor: { r: 0, g: 0, b: 0, a: 255 },
+			superSample: superSampleMode,
 			autoResize: false
 		} );
 
@@ -316,6 +503,67 @@ async function main() {
 		log( 'ThreeCliRenderer initialized' );
 		log( 'ThreeCliRenderer ready' );
 		syncQuakeVideoSize( renderW, renderH );
+
+		const precompileEnabled = process.env.QUAKE_TUI_PRECOMPILE !== '0';
+		const precompileTextures = process.env.QUAKE_TUI_PRECOMPILE_TEXTURES !== '0';
+		const precompileForceVisible = process.env.QUAKE_TUI_PRECOMPILE_FORCE_VISIBLE === '1';
+		const precompileWarmRender = process.env.QUAKE_TUI_PRECOMPILE_WARM_RENDER === '1';
+		let precompiledSceneRef = null;
+		let precompiledSceneChildren = -1;
+		let precompileInFlight = null;
+		let precompilePendingReason = '';
+
+		const queueScenePrecompile = ( reason ) => {
+
+			if ( !precompileEnabled ) return;
+			if ( !scene || !camera ) return;
+			precompilePendingReason = reason || 'unspecified';
+			if ( precompileInFlight ) return;
+
+			precompileInFlight = ( async () => {
+
+				const sceneToCompile = scene;
+				const cameraToCompile = camera;
+				const reasonText = precompilePendingReason;
+				const sceneChildrenBefore = sceneToCompile ? sceneToCompile.children.length : 0;
+
+				try {
+
+					log(
+						'Precompile queue:',
+						reasonText,
+						`sceneChildren=${sceneChildrenBefore}`
+					);
+					const compiled = await precompileCurrentMapScene(
+						threeRenderer,
+						sceneToCompile,
+						cameraToCompile,
+						{
+							precompileTextures,
+							forceVisible: precompileForceVisible,
+							warmRender: precompileWarmRender && ( reasonText === 'startup' || reasonText === 'scene-changed' )
+						}
+					);
+					if ( compiled ) {
+
+						precompiledSceneRef = sceneToCompile;
+						precompiledSceneChildren = sceneToCompile ? sceneToCompile.children.length : -1;
+
+					}
+
+				} finally {
+
+					precompileInFlight = null;
+
+				}
+
+			} )();
+
+			return precompileInFlight;
+
+		};
+
+		await queueScenePrecompile( 'startup' );
 
 		// Render scene into an offscreen buffer, then scale-composite in post-process
 		// so root renderables cannot overwrite the 3D frame.
@@ -380,29 +628,237 @@ async function main() {
 		// ----------------------------------------------------------------
 
 		let lastTime = performance.now() / 1000;
+		const simTickHzRaw = Number.parseInt( process.env.QUAKE_TUI_SIM_TICK_HZ || '60', 10 );
+		const simTickHz = Number.isFinite( simTickHzRaw ) && simTickHzRaw > 0 ? simTickHzRaw : 60;
+		const simTickDt = 1 / simTickHz;
+		const maxSimStepsRaw = Number.parseInt( process.env.QUAKE_TUI_SIM_MAX_STEPS || '6', 10 );
+		const maxSimSteps = Number.isFinite( maxSimStepsRaw ) && maxSimStepsRaw > 0 ? maxSimStepsRaw : 6;
+		let simAccumulator = 0;
 		let frameCount = 0;
+		let lastPostProcessMs = 0;
+		let renderJob = null;
+		let renderJobStartedAtMs = 0;
+		let renderJobStartFrame = 0;
+		let renderSkipCount = 0;
+		let lastCompletedRenderStats = {
+			frame: 0,
+			drawSceneMs: 0,
+			otRenderMs: 0,
+			otReadbackMs: 0,
+			otMapAsyncMs: 0,
+			otSsDrawMs: 0,
+			exposureMs: 0,
+			overlayMs: 0
+		};
+
+		const startAsyncRenderJob = ( deltaTime ) => {
+
+			if ( renderJob || !scene || !camera ) return false;
+			const renderSceneRef = scene;
+			const renderCameraRef = camera;
+			renderJobStartedAtMs = performance.now();
+			renderJobStartFrame = frameCount;
+			const job = ( async () => {
+
+				let drawSceneMs = 0;
+				let otRenderMs = 0;
+				let otReadbackMs = 0;
+				let otMapAsyncMs = 0;
+				let otSsDrawMs = 0;
+				let exposureMs = 0;
+				let overlayMs = 0;
+
+				threeRenderer.setActiveCamera( renderCameraRef );
+				if ( perfDebug ) {
+
+					const t0 = performance.now();
+					await threeRenderer.drawScene( renderSceneRef, sceneBuffer, deltaTime );
+					drawSceneMs = performance.now() - t0;
+					otRenderMs = Number.isFinite( threeRenderer.renderTimeMs ) ? threeRenderer.renderTimeMs : 0;
+					otReadbackMs = Number.isFinite( threeRenderer.readbackTimeMs ) ? threeRenderer.readbackTimeMs : 0;
+					otMapAsyncMs = Number.isFinite( threeRenderer.canvas?.mapAsyncTimeMs ) ? threeRenderer.canvas.mapAsyncTimeMs : 0;
+					otSsDrawMs = Number.isFinite( threeRenderer.canvas?.superSampleDrawTimeMs ) ? threeRenderer.canvas.superSampleDrawTimeMs : 0;
+
+				} else {
+
+					await threeRenderer.drawScene( renderSceneRef, sceneBuffer, deltaTime );
+
+				}
+
+				const exposure = getTuiExposureParams();
+				if ( perfDebug ) {
+
+					const t0 = performance.now();
+					boostBufferExposure( sceneBuffer, exposure.gain, exposure.gamma );
+					exposureMs = performance.now() - t0;
+
+				} else {
+
+					boostBufferExposure( sceneBuffer, exposure.gain, exposure.gamma );
+
+				}
+				if ( perfDebug ) {
+
+					const t0 = performance.now();
+					compositeOverlayIntoBuffer( sceneBuffer );
+					overlayMs = performance.now() - t0;
+
+				} else {
+
+					compositeOverlayIntoBuffer( sceneBuffer );
+
+				}
+
+				sceneBufferReady = true;
+				lastCompletedRenderStats = {
+					frame: frameCount,
+					drawSceneMs,
+					otRenderMs,
+					otReadbackMs,
+					otMapAsyncMs,
+					otSsDrawMs,
+					exposureMs,
+					overlayMs
+				};
+
+				if ( typeof cliRenderer.requestRender === 'function' ) {
+
+					cliRenderer.requestRender();
+
+				}
+
+				if ( perfDebug && ( drawSceneMs >= perfSpikeThresholdMs || otRenderMs >= perfSpikeThresholdMs ) ) {
+
+					log(
+						'RenderJob',
+						`startedFrame=${renderJobStartFrame}`,
+						`completedAtFrame=${frameCount}`,
+						`queuedFor=${( performance.now() - renderJobStartedAtMs ).toFixed( 1 )}ms`,
+						`draw=${drawSceneMs.toFixed( 1 )}ms`,
+						`otRender=${otRenderMs.toFixed( 1 )}ms`,
+						`otReadback=${otReadbackMs.toFixed( 1 )}ms`,
+						`otMapAsync=${otMapAsyncMs.toFixed( 1 )}ms`
+					);
+
+				}
+
+			} )().catch( ( e ) => {
+
+				log( 'Async render job failed:', e.message || String( e ), e.stack || '' );
+
+			} ).finally( () => {
+
+				if ( renderJob === job ) renderJob = null;
+
+			} );
+
+			renderJob = job;
+			return true;
+
+		};
 
 		cliRenderer.setFrameCallback( async ( deltaTime ) => {
 
+			const perfFrameStart = perfDebug ? performance.now() : 0;
+			let hostFrameMs = 0;
+			let uvSanitizeMs = 0;
+			let drawSceneMs = lastCompletedRenderStats.drawSceneMs;
+			let otRenderMs = lastCompletedRenderStats.otRenderMs;
+			let otReadbackMs = lastCompletedRenderStats.otReadbackMs;
+			let otMapAsyncMs = lastCompletedRenderStats.otMapAsyncMs;
+			let otSsDrawMs = lastCompletedRenderStats.otSsDrawMs;
+			let exposureMs = lastCompletedRenderStats.exposureMs;
+			let overlayMs = lastCompletedRenderStats.overlayMs;
 			const now = performance.now() / 1000;
-			const dt = Math.min( now - lastTime, 0.1 );
-			lastTime = now;
-			frameCount ++;
+				const dt = Math.min( now - lastTime, 0.1 );
+				lastTime = now;
+				frameCount ++;
 
-			// Update Quake engine (game logic, physics, scene graph)
-			Host_Frame( dt );
+				// Update Quake engine (game logic, physics, scene graph) at a fixed
+				// simulation tick rate so render stalls do not directly change sim dt.
+				simAccumulator = Math.min( simAccumulator + dt, simTickDt * maxSimSteps );
+				let simSteps = 0;
+				if ( perfDebug ) {
 
-			if ( frameCount <= 60 || frameCount % 120 === 0 )
-				ensureSceneTextureUVs( scene );
+					const t0 = performance.now();
+					while ( simAccumulator >= simTickDt && simSteps < maxSimSteps ) {
 
-			// Render Three.js scene to the terminal buffer via GPU
-			if ( scene && camera ) {
+						Host_Frame( simTickDt );
+						simAccumulator -= simTickDt;
+						simSteps ++;
 
-				threeRenderer.setActiveCamera( camera );
-				await threeRenderer.drawScene( scene, sceneBuffer, deltaTime );
-				boostBufferExposure( sceneBuffer, 2.0, 0.9 );
-				compositeOverlayIntoBuffer( sceneBuffer );
-				sceneBufferReady = true;
+					}
+					hostFrameMs = performance.now() - t0;
+
+				} else {
+
+					while ( simAccumulator >= simTickDt && simSteps < maxSimSteps ) {
+
+						Host_Frame( simTickDt );
+						simAccumulator -= simTickDt;
+						simSteps ++;
+
+					}
+
+				}
+
+			uvSanitizeMs = maybeEnsureSceneTextureUVs( scene, frameCount );
+
+			if ( precompileEnabled && scene && camera ) {
+
+				if ( precompiledSceneRef !== scene ) {
+
+					queueScenePrecompile( 'scene-changed' );
+
+				} else if ( scene.children.length > precompiledSceneChildren ) {
+
+					queueScenePrecompile( 'scene-grew' );
+
+				}
+
+			}
+
+			// Launch render asynchronously so sim/input keep updating during GPU stalls.
+			if ( !precompileInFlight ) {
+
+				if ( !startAsyncRenderJob( deltaTime ) ) renderSkipCount ++;
+
+			}
+
+			if ( perfDebug ) {
+
+				const frameMs = performance.now() - perfFrameStart;
+				const renderBusyMs = renderJob ? performance.now() - renderJobStartedAtMs : 0;
+				if (
+					frameCount <= 5 ||
+					frameMs >= perfSpikeThresholdMs ||
+					hostFrameMs >= perfSpikeThresholdMs ||
+					renderBusyMs >= perfSpikeThresholdMs
+				) {
+
+					log(
+						'Perf',
+						`frame=${frameCount}`,
+						`total=${frameMs.toFixed( 1 )}ms`,
+							`host=${hostFrameMs.toFixed( 1 )}ms`,
+							`simSteps=${simSteps}`,
+							`uvscan=${uvSanitizeMs.toFixed( 1 )}ms`,
+						`draw=${drawSceneMs.toFixed( 1 )}ms`,
+						`otRender=${otRenderMs.toFixed( 1 )}ms`,
+						`otReadback=${otReadbackMs.toFixed( 1 )}ms`,
+						`otMapAsync=${otMapAsyncMs.toFixed( 1 )}ms`,
+						`otSS=${otSsDrawMs.toFixed( 1 )}ms`,
+						`exposure=${exposureMs.toFixed( 1 )}ms`,
+						`overlay=${overlayMs.toFixed( 1 )}ms`,
+						`renderBusy=${renderJob ? 1 : 0}`,
+						`renderBusyMs=${renderBusyMs.toFixed( 1 )}ms`,
+						`renderSkips=${renderSkipCount}`,
+						`blit=${lastPostProcessMs.toFixed( 1 )}ms`,
+						`render=${renderW}x${renderH}`,
+						`sceneChildren=${scene ? scene.children.length : 0}`
+					);
+
+				}
 
 			}
 
@@ -424,23 +880,25 @@ async function main() {
 
 		cliRenderer.addPostProcessFn( ( buffer ) => {
 
+			const t0 = perfDebug ? performance.now() : 0;
 			if ( sceneBufferReady ) {
 
 				blitScaledBufferNearest( sceneBuffer, buffer );
 
 			}
+			if ( perfDebug ) lastPostProcessMs = performance.now() - t0;
 
 		} );
 
 		log( 'Starting render loop...' );
 		cliRenderer.start();
 
-		} catch ( e ) {
+	} catch ( e ) {
 
-			log( 'FATAL ERROR:', e.message, e.stack );
-			console.error( 'Three-Quake TUI Fatal Error:', e );
-			emergencyTerminalReset( 'main-fatal' );
-			process.exit( 1 );
+		log( 'FATAL ERROR:', e.message, e.stack );
+		console.error( 'Three-Quake TUI Fatal Error:', e );
+		emergencyTerminalReset( 'main-fatal' );
+		process.exit( 1 );
 
 	}
 
@@ -457,14 +915,10 @@ function setupTerminalInput( cliRenderer ) {
 	const fallbackTapReleaseMs = Number.isFinite( fallbackTapReleaseRaw ) && fallbackTapReleaseRaw > 0
 		? fallbackTapReleaseRaw
 		: 28;
-	const fallbackInitialHoldRaw = Number.parseInt( process.env.QUAKE_TUI_HOLD_INITIAL_MS || '240', 10 );
-	const fallbackInitialHoldMs = Number.isFinite( fallbackInitialHoldRaw ) && fallbackInitialHoldRaw > 0
-		? fallbackInitialHoldRaw
-		: 240;
-	const fallbackRepeatHoldRaw = Number.parseInt( process.env.QUAKE_TUI_HOLD_REPEAT_MS || '70', 10 );
-	const fallbackRepeatHoldMs = Number.isFinite( fallbackRepeatHoldRaw ) && fallbackRepeatHoldRaw > 0
-		? fallbackRepeatHoldRaw
-		: 70;
+	const fallbackHoldIdleReleaseRaw = Number.parseInt( process.env.QUAKE_TUI_HOLD_IDLE_RELEASE_MS || '340', 10 );
+	const fallbackHoldIdleReleaseMs = Number.isFinite( fallbackHoldIdleReleaseRaw ) && fallbackHoldIdleReleaseRaw > 0
+		? fallbackHoldIdleReleaseRaw
+		: 340;
 
 	const parsedKeyMap = {
 		escape: K_ESCAPE,
@@ -535,8 +989,11 @@ function setupTerminalInput( cliRenderer ) {
 	};
 
 	const pressedKeys = new Set();
+	const pressedHoldKeys = new Set();
 	const releaseTimers = new Map();
 	let hasKeyReleaseEvents = false;
+	let parsedKeyInputActive = false;
+	let holdReleaseIdleTimer = null;
 
 	function clearReleaseTimer( key ) {
 
@@ -550,10 +1007,52 @@ function setupTerminalInput( cliRenderer ) {
 
 	}
 
+	function hasPressedHoldKeys() {
+
+		return pressedHoldKeys.size > 0;
+
+	}
+
+	function clearHoldReleaseIdleTimer() {
+
+		if ( holdReleaseIdleTimer ) {
+
+			clearTimeout( holdReleaseIdleTimer );
+			holdReleaseIdleTimer = null;
+
+		}
+
+	}
+
+	function scheduleHoldReleaseIdleFallback() {
+
+		if ( hasKeyReleaseEvents ) return;
+		clearHoldReleaseIdleTimer();
+		if ( ! hasPressedHoldKeys() ) return;
+
+		holdReleaseIdleTimer = setTimeout( () => {
+
+			holdReleaseIdleTimer = null;
+			if ( hasKeyReleaseEvents ) return;
+
+			// Fallback for terminals without keyup events:
+			// release held movement/action keys after keyboard idle.
+			for ( const key of Array.from( pressedKeys ) ) {
+
+				if ( isHoldBindingKey( key ) ) releaseKey( key );
+
+			}
+
+		}, fallbackHoldIdleReleaseMs );
+
+	}
+
 	function clearAllReleaseTimers() {
 
 		for ( const timer of releaseTimers.values() ) clearTimeout( timer );
 		releaseTimers.clear();
+		clearHoldReleaseIdleTimer();
+		pressedHoldKeys.clear();
 
 	}
 
@@ -570,14 +1069,6 @@ function setupTerminalInput( cliRenderer ) {
 
 	}
 
-	function getFallbackReleaseMs( key, isRepeatKeyPress ) {
-
-		if ( ! isHoldBindingKey( key ) ) return fallbackTapReleaseMs;
-
-		return isRepeatKeyPress ? fallbackRepeatHoldMs : fallbackInitialHoldMs;
-
-	}
-
 	function scheduleReleaseFallback( key, delayMs ) {
 
 		if ( hasKeyReleaseEvents ) return;
@@ -586,12 +1077,7 @@ function setupTerminalInput( cliRenderer ) {
 		const timer = setTimeout( () => {
 
 			releaseTimers.delete( key );
-			if ( pressedKeys.has( key ) ) {
-
-				pressedKeys.delete( key );
-				Key_Event( key, false );
-
-			}
+			releaseKey( key );
 
 		}, delayMs );
 		releaseTimers.set( key, timer );
@@ -603,27 +1089,44 @@ function setupTerminalInput( cliRenderer ) {
 		clearReleaseTimer( key );
 		if ( pressedKeys.has( key ) ) {
 
+			pressedHoldKeys.delete( key );
 			pressedKeys.delete( key );
 			if ( inputDebug ) log( 'Key up:', key );
 			Key_Event( key, false );
 
 		}
 
+		if ( ! hasKeyReleaseEvents ) scheduleHoldReleaseIdleFallback();
+
 	}
 
 	function pressKey( key ) {
 
-		const alreadyPressed = pressedKeys.has( key );
+		let holdBinding = pressedHoldKeys.has( key );
 		if ( ! pressedKeys.has( key ) ) {
 
 			pressedKeys.add( key );
+			holdBinding = isHoldBindingKey( key );
+			if ( holdBinding ) pressedHoldKeys.add( key );
 			if ( inputDebug ) log( 'Key down:', key );
 			Key_Event( key, true );
 
 		}
 
 		// Fallback for terminals that do not emit keyrelease events.
-		if ( ! hasKeyReleaseEvents ) scheduleReleaseFallback( key, getFallbackReleaseMs( key, alreadyPressed ) );
+		if ( ! hasKeyReleaseEvents ) {
+
+			if ( holdBinding ) {
+
+				scheduleHoldReleaseIdleFallback();
+
+			} else {
+
+				scheduleReleaseFallback( key, fallbackTapReleaseMs );
+
+			}
+
+		}
 
 	}
 
@@ -674,6 +1177,10 @@ function setupTerminalInput( cliRenderer ) {
 
 		}
 
+		// Parsed OpenTUI key events are lower overhead and include keyrelease.
+		// Once we know they work, disable the raw-sequence fallback path.
+		if ( parsedKeyInputActive ) return false;
+
 		// Kitty keyboard sequences are already emitted by keyInput.
 		if ( sequence.startsWith( '\x1b[' ) && sequence.endsWith( 'u' ) ) return false;
 
@@ -701,11 +1208,19 @@ function setupTerminalInput( cliRenderer ) {
 
 	}
 
-	const onKeyPress = ( event ) => {
+		const onKeyPress = ( event ) => {
 
-		if ( event && event.ctrl && event.name === 'c' ) {
+		if ( ! parsedKeyInputActive ) {
 
-			handleCtrlC();
+			parsedKeyInputActive = true;
+			cliRenderer.removeInputHandler( handleRawSequence );
+			if ( inputDebug ) log( 'Parsed key input active; raw fallback handler removed' );
+
+		}
+
+			if ( event && event.ctrl && event.name === 'c' ) {
+
+				handleCtrlC();
 			return;
 
 		}
@@ -718,10 +1233,18 @@ function setupTerminalInput( cliRenderer ) {
 
 	};
 
-	const onKeyRelease = ( event ) => {
+		const onKeyRelease = ( event ) => {
 
-		const quakeKey = toQuakeKey( event );
-		if ( quakeKey === undefined ) return;
+		if ( ! parsedKeyInputActive ) {
+
+			parsedKeyInputActive = true;
+			cliRenderer.removeInputHandler( handleRawSequence );
+			if ( inputDebug ) log( 'Parsed key input active; raw fallback handler removed' );
+
+		}
+
+			const quakeKey = toQuakeKey( event );
+			if ( quakeKey === undefined ) return;
 		if ( ! hasKeyReleaseEvents ) {
 
 			hasKeyReleaseEvents = true;
@@ -748,10 +1271,11 @@ function setupTerminalInput( cliRenderer ) {
 		process.off( 'SIGINT', onSigInt );
 		process.off( 'SIGTERM', onSigTerm );
 		clearAllReleaseTimers();
-		releasePressedKeys();
-		hasKeyReleaseEvents = false;
+			releasePressedKeys();
+			hasKeyReleaseEvents = false;
+			parsedKeyInputActive = false;
 
-	}
+		}
 
 	cliRenderer.addInputHandler( handleRawSequence );
 	cliRenderer.keyInput.on( 'keypress', onKeyPress );
@@ -1127,13 +1651,13 @@ function setupTerminalMouse( cliRenderer, mouseCapture ) {
 		mouseCapture.onMouseScroll = undefined;
 		mouseCapture.onMouseOut = undefined;
 		for ( const key of pressedMouseKeys ) Key_Event( key, false );
-			pressedMouseKeys.clear();
-			lastX = null;
-			lastY = null;
-			rawMouseActive = false;
-			rendererFocused = false;
-			cliRenderer.off( 'focus', onFocus );
-			cliRenderer.off( 'blur', onBlur );
+		pressedMouseKeys.clear();
+		lastX = null;
+		lastY = null;
+		rawMouseActive = false;
+		rendererFocused = false;
+		cliRenderer.off( 'focus', onFocus );
+		cliRenderer.off( 'blur', onBlur );
 
 	}
 
@@ -1144,6 +1668,28 @@ function setupTerminalMouse( cliRenderer, mouseCapture ) {
 const _uvSanitizedGeometries = new WeakSet();
 const _uvSanitizeFailedGeometries = new WeakSet();
 let _uvPatchedCount = 0;
+let _uvLastRootChildCount = - 1;
+
+function maybeEnsureSceneTextureUVs( root, frameCount ) {
+
+	if ( ! root ) return 0;
+
+	const rootChildCount = Array.isArray( root.children ) ? root.children.length : - 1;
+	const startupScan = frameCount <= 180 && ( frameCount <= 30 || frameCount % 15 === 0 );
+	const periodicScan = frameCount % 240 === 0;
+	const sceneTopologyChanged = rootChildCount !== _uvLastRootChildCount;
+	const shouldScan = _uvSanitizeRequested || startupScan || periodicScan || sceneTopologyChanged;
+
+	if ( ! shouldScan ) return 0;
+
+	const t0 = perfDebug ? performance.now() : 0;
+	ensureSceneTextureUVs( root );
+	_uvSanitizeRequested = false;
+	_uvLastRootChildCount = rootChildCount;
+
+	return perfDebug ? performance.now() - t0 : 0;
+
+}
 
 function ensureSceneTextureUVs( root ) {
 
@@ -1228,6 +1774,20 @@ function clampInt( value, min, max ) {
 
 }
 
+function getTuiExposureParams() {
+
+	const rawExposure = vidRenderer && Number.isFinite( vidRenderer.toneMappingExposure )
+		? vidRenderer.toneMappingExposure
+		: 1.5;
+
+	// Brightness boost requested: double the TUI output gain while keeping the
+	// in-game gamma slider as the source of truth (via toneMappingExposure).
+	const gain = Math.max( 0.55, Math.min( 4.0, rawExposure * ( 2.0 / 1.5 ) ) );
+	const gamma = gain > 2.8 ? 0.90 : gain > 1.9 ? 0.95 : 1.0;
+	return { gain, gamma };
+
+}
+
 function blitScaledBufferNearest( srcBuffer, dstBuffer ) {
 
 	const srcW = srcBuffer.width;
@@ -1250,7 +1810,7 @@ function blitScaledBufferNearest( srcBuffer, dstBuffer ) {
 	const dstFg = dstBuffer.buffers.fg;
 	const dstBg = dstBuffer.buffers.bg;
 	const dstAttrs = dstBuffer.buffers.attributes;
-
+ 
 	for ( let y = 0; y < dstH; y ++ ) {
 
 		const sy = Math.min( srcH - 1, Math.floor( y * srcH / dstH ) );
@@ -1318,20 +1878,65 @@ function logInputState( prefix = 'State' ) {
 
 }
 
+const EXPOSURE_LUT_SIZE = 1024;
+let _exposureLut = null;
+let _exposureLutGain = NaN;
+let _exposureLutGamma = NaN;
+
+function getExposureLut( gain, gamma ) {
+
+	const quantizedGain = Math.round( gain * 1000 ) / 1000;
+	const quantizedGamma = Math.round( gamma * 1000 ) / 1000;
+	if (
+		_exposureLut != null &&
+		quantizedGain === _exposureLutGain &&
+		quantizedGamma === _exposureLutGamma
+	) {
+
+		return _exposureLut;
+
+	}
+
+	const lut = new Float32Array( EXPOSURE_LUT_SIZE );
+	const maxIndex = EXPOSURE_LUT_SIZE - 1;
+	for ( let i = 0; i <= maxIndex; i ++ ) {
+
+		const value = i / maxIndex;
+		lut[ i ] = Math.min( 1, Math.pow( Math.max( 0, value * gain ), gamma ) );
+
+	}
+
+	_exposureLut = lut;
+	_exposureLutGain = quantizedGain;
+	_exposureLutGamma = quantizedGamma;
+	return lut;
+
+}
+
 function boostBufferExposure( buffer, gain = 1.0, gamma = 1.0 ) {
+
+	if ( Math.abs( gain - 1 ) < 0.0001 && Math.abs( gamma - 1 ) < 0.0001 ) return;
 
 	const fg = buffer.buffers.fg;
 	const bg = buffer.buffers.bg;
+	const lut = getExposureLut( gain, gamma );
+	const maxIndex = EXPOSURE_LUT_SIZE - 1;
 
 	for ( let i = 0; i < fg.length; i += 4 ) {
 
-		fg[ i ] = Math.min( 1, Math.pow( Math.max( 0, fg[ i ] * gain ), gamma ) );
-		fg[ i + 1 ] = Math.min( 1, Math.pow( Math.max( 0, fg[ i + 1 ] * gain ), gamma ) );
-		fg[ i + 2 ] = Math.min( 1, Math.pow( Math.max( 0, fg[ i + 2 ] * gain ), gamma ) );
+		const fgR = Math.min( maxIndex, Math.max( 0, ( fg[ i ] * maxIndex ) | 0 ) );
+		const fgG = Math.min( maxIndex, Math.max( 0, ( fg[ i + 1 ] * maxIndex ) | 0 ) );
+		const fgB = Math.min( maxIndex, Math.max( 0, ( fg[ i + 2 ] * maxIndex ) | 0 ) );
+		fg[ i ] = lut[ fgR ];
+		fg[ i + 1 ] = lut[ fgG ];
+		fg[ i + 2 ] = lut[ fgB ];
 
-		bg[ i ] = Math.min( 1, Math.pow( Math.max( 0, bg[ i ] * gain ), gamma ) );
-		bg[ i + 1 ] = Math.min( 1, Math.pow( Math.max( 0, bg[ i + 1 ] * gain ), gamma ) );
-		bg[ i + 2 ] = Math.min( 1, Math.pow( Math.max( 0, bg[ i + 2 ] * gain ), gamma ) );
+		const bgR = Math.min( maxIndex, Math.max( 0, ( bg[ i ] * maxIndex ) | 0 ) );
+		const bgG = Math.min( maxIndex, Math.max( 0, ( bg[ i + 1 ] * maxIndex ) | 0 ) );
+		const bgB = Math.min( maxIndex, Math.max( 0, ( bg[ i + 2 ] * maxIndex ) | 0 ) );
+		bg[ i ] = lut[ bgR ];
+		bg[ i + 1 ] = lut[ bgG ];
+		bg[ i + 2 ] = lut[ bgB ];
 
 	}
 
