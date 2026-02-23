@@ -404,7 +404,7 @@ export async function Host_Init( parms ) {
 	Cbuf_AddText( 'bind SPACE +jump\n' );
 	Cbuf_AddText( 'bind UPARROW +lookup\n' );
 	Cbuf_AddText( 'bind DOWNARROW +lookdown\n' );
-	Cbuf_AddText( 'bind CTRL +attack\n' );
+	Cbuf_AddText( 'bind ENTER +attack\n' );
 	Cbuf_AddText( 'bind MOUSE1 +attack\n' );
 
 	// Always run by default for the web port

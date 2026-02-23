@@ -550,9 +550,9 @@ Materials are cached per (paliashdr, skinnum, hasLighting) to avoid
 per-frame material creation and shader compilation.
 =================
 */
-function createAliasLambertMaterial( texture, hasLighting, fallbackColor = 0xffffff ) {
+function createAliasPhongMaterial( texture, hasLighting, fallbackColor = 0xffffff ) {
 
-	return new THREE.MeshLambertMaterial( {
+	return new THREE.MeshPhongMaterial( {
 		map: texture || null,
 		color: fallbackColor,
 		vertexColors: hasLighting
@@ -574,7 +574,7 @@ function R_GetAliasMaterial( paliashdr, entity, hasLighting, playerSkinTexture )
 
 			}
 
-			entity._playerMaterial = createAliasLambertMaterial( playerSkinTexture, hasLighting, 0xffffff );
+			entity._playerMaterial = createAliasPhongMaterial( playerSkinTexture, hasLighting, 0xffffff );
 			entity._playerSkinTexture = playerSkinTexture;
 
 		}
@@ -612,11 +612,11 @@ function R_GetAliasMaterial( paliashdr, entity, hasLighting, playerSkinTexture )
 
 	if ( texture ) {
 
-		material = createAliasLambertMaterial( texture, hasLighting, 0xffffff );
+		material = createAliasPhongMaterial( texture, hasLighting, 0xffffff );
 
 	} else {
 
-		material = createAliasLambertMaterial( null, hasLighting, 0xcccccc );
+		material = createAliasPhongMaterial( null, hasLighting, 0xcccccc );
 
 	}
 

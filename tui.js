@@ -631,8 +631,14 @@ async function main() {
 		const simTickHzRaw = Number.parseInt( process.env.QUAKE_TUI_SIM_TICK_HZ || '60', 10 );
 		const simTickHz = Number.isFinite( simTickHzRaw ) && simTickHzRaw > 0 ? simTickHzRaw : 60;
 		const simTickDt = 1 / simTickHz;
-		const maxSimStepsRaw = Number.parseInt( process.env.QUAKE_TUI_SIM_MAX_STEPS || '6', 10 );
-		const maxSimSteps = Number.isFinite( maxSimStepsRaw ) && maxSimStepsRaw > 0 ? maxSimStepsRaw : 6;
+		const maxSimStepsRaw = Number.parseInt( process.env.QUAKE_TUI_SIM_MAX_STEPS || '30', 10 );
+		const maxSimSteps = Number.isFinite( maxSimStepsRaw ) && maxSimStepsRaw > 0 ? maxSimStepsRaw : 30;
+		const simFrameDtCapMsRaw = Number.parseFloat( process.env.QUAKE_TUI_SIM_FRAME_DT_CAP_MS || '500' );
+		const simFrameDtCapMs = Number.isFinite( simFrameDtCapMsRaw ) && simFrameDtCapMsRaw > 0
+			? simFrameDtCapMsRaw
+			: 500;
+		const simFrameDtCap = simFrameDtCapMs / 1000;
+		log( 'Sim loop config:', `tick=${simTickHz}Hz`, `maxSteps=${maxSimSteps}`, `dtCapMs=${simFrameDtCapMs.toFixed( 0 )}` );
 		let simAccumulator = 0;
 		let frameCount = 0;
 		let lastPostProcessMs = 0;
@@ -770,7 +776,7 @@ async function main() {
 			let exposureMs = lastCompletedRenderStats.exposureMs;
 			let overlayMs = lastCompletedRenderStats.overlayMs;
 			const now = performance.now() / 1000;
-				const dt = Math.min( now - lastTime, 0.1 );
+				const dt = Math.min( now - lastTime, simFrameDtCap );
 				lastTime = now;
 				frameCount ++;
 
@@ -1069,6 +1075,14 @@ function setupTerminalInput( cliRenderer ) {
 
 	}
 
+	function shouldForceTapFallback( key ) {
+
+		// Some terminals do not emit reliable keyrelease events for Enter.
+		// Treat it as a tap in fallback mode to avoid stuck +attack when bound.
+		return key === K_ENTER;
+
+	}
+
 	function scheduleReleaseFallback( key, delayMs ) {
 
 		if ( hasKeyReleaseEvents ) return;
@@ -1114,7 +1128,15 @@ function setupTerminalInput( cliRenderer ) {
 		}
 
 		// Fallback for terminals that do not emit keyrelease events.
-		if ( ! hasKeyReleaseEvents ) {
+		const forceTapFallback = shouldForceTapFallback( key );
+		if ( forceTapFallback ) {
+
+			pressedHoldKeys.delete( key );
+			holdBinding = false;
+
+		}
+
+		if ( ! hasKeyReleaseEvents || forceTapFallback ) {
 
 			if ( holdBinding ) {
 
@@ -1122,7 +1144,8 @@ function setupTerminalInput( cliRenderer ) {
 
 			} else {
 
-				scheduleReleaseFallback( key, fallbackTapReleaseMs );
+				const tapDelayMs = forceTapFallback ? Math.max( fallbackTapReleaseMs, 45 ) : fallbackTapReleaseMs;
+				scheduleReleaseFallback( key, tapDelayMs );
 
 			}
 

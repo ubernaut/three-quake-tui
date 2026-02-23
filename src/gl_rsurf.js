@@ -7,7 +7,7 @@ function createQuakeLightmapMaterial( diffuseMap, lightmapTex ) {
 
 	lightmapTex.channel = 1; // Use uv1 for lightmap coordinates
 
-	// Use Lambert for lower-cost lit shading.
+	// Use Phong for per-pixel lit shading in TUI/WebGPU mode.
 	const matOptions = {
 		map: diffuseMap,
 		lightMap: lightmapTex,
@@ -26,7 +26,7 @@ function createQuakeLightmapMaterial( diffuseMap, lightmapTex ) {
 
 	}
 
-	return new THREE.MeshLambertMaterial( matOptions );
+	return new THREE.MeshPhongMaterial( matOptions );
 
 }
 
@@ -44,7 +44,7 @@ function createQuakeDiffuseMaterial( diffuseMap ) {
 
 	}
 
-	return new THREE.MeshLambertMaterial( matOptions );
+	return new THREE.MeshPhongMaterial( matOptions );
 
 }
 import { cl, cl_dlights, MAX_VISEDICTS, cl_visedicts, cl_numvisedicts, set_cl_numvisedicts } from './client.js';
@@ -268,7 +268,7 @@ function _getWaterMaterial( t, opacity ) {
 	let material = _waterMaterialCache.get( cacheKey );
 	if ( ! material ) {
 
-		material = new THREE.MeshLambertMaterial( {
+		material = new THREE.MeshPhongMaterial( {
 			map: ( t && t.gl_texture ) ? t.gl_texture : null,
 			color: ( t && t.gl_texture ) ? 0xffffff : 0x406080,
 			transparent: true,

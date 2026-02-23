@@ -914,9 +914,9 @@ const _sprite_v_forward = new Float32Array( 3 );
 const _sprite_v_right = new Float32Array( 3 );
 const _sprite_v_up = new Float32Array( 3 );
 
-function _createSpriteLambertMaterial( texture ) {
+function _createSpritePhongMaterial( texture ) {
 
-	return new THREE.MeshLambertMaterial( {
+	return new THREE.MeshPhongMaterial( {
 		map: texture,
 		transparent: true,
 		alphaTest: 0.5,
@@ -959,7 +959,7 @@ function R_DrawSpriteModel( e ) {
 		let material = _spriteMaterialCache.get( texture );
 		if ( ! material ) {
 
-			material = _createSpriteLambertMaterial( texture );
+			material = _createSpritePhongMaterial( texture );
 			_spriteMaterialCache.set( texture, material );
 
 		}
@@ -973,7 +973,7 @@ function R_DrawSpriteModel( e ) {
 		let material = _spriteMaterialCache.get( texture );
 		if ( ! material ) {
 
-			material = _createSpriteLambertMaterial( texture );
+			material = _createSpritePhongMaterial( texture );
 			_spriteMaterialCache.set( texture, material );
 
 		}
